@@ -70,19 +70,29 @@ docs/                  setup guides, HTTP API, CLI, and reverse-engineering note
 
 ## Quick start
 
-Full walkthrough: **[docs/getting-started.md](docs/getting-started.md)**. In short:
+Run the guided installer — it selects your USB-serial adapter, installs the Rust
+toolchain, builds the firmware, backs up the hub, and deploys our software:
 
 ```bash
-# 1. Build the firmware (needs Rust 1.74 + the mips-unknown-linux-musl target; see build-mips.sh)
-./service/build-mips.sh irapi
-
-# 2. First-time install onto the hub is over UART — see docs/getting-started.md and
-#    docs/board-access-runbook.md. After that, updates are one command over the network:
-python3 tools/ota.py <hub-ip> firmware service/irapi/target/mips-unknown-linux-musl/release/irapi
-
-# 3. Open the web UI
-open http://<hub-ip>/
+git clone https://github.com/samuelleb11/logitechharmonyhub
+cd logitechharmonyhub
+./install.sh
 ```
+
+`./install.sh` opens a menu; or drive it directly:
+
+```bash
+./install.sh deps        # install Rust 1.74 + the mips-unknown-linux-musl target
+./install.sh build       # cross-build the firmware
+./install.sh deploy      # push firmware over the network (hub already running our software)
+./install.sh backup      # back up the hub flash over the serial console   [advanced]
+./install.sh provision   # first-time install onto a fresh hub over serial  [advanced]
+./install.sh all         # deps → build → deploy  (the usual update loop)
+```
+
+Then open the web UI at **http://\<hub-ip\>/**. First-time provisioning needs a
+3.3 V USB-serial adapter on the **J2** pads (pad 2 RX, 4 TX, 8 GND) — the full
+walkthrough is in **[docs/getting-started.md](docs/getting-started.md)**.
 
 Reference docs: **[HTTP API](docs/http-api.md)** · **[CLI](docs/cli.md)** ·
 **[Home Assistant](homeassistant/README.md)**.

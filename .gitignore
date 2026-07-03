@@ -3,6 +3,9 @@
 *.swp
 *~
 
+# ---- installer local state (remembers your serial port + hub IP) ----
+.install.conf
+
 # ---- Rust build output ----
 target/
 

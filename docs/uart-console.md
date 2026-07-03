@@ -8,7 +8,10 @@
   logging daemon (below) is running.
 
 ### Where to connect — the J2 pads
-On the board, the serial console is broken out on the **J2 pad cluster**:
+On the board, the serial console is broken out on the **J2 pad cluster** (reachable through an
+opening in the case underside — no full teardown needed):
+
+![J2 UART header on the case underside — pad 2 RX, pad 4 TX, pad 8 GND](images/j2-uart-header.jpg)
 
 | J2 pad | Signal |
 |-------:|--------|

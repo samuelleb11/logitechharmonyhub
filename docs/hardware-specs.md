@@ -18,6 +18,24 @@ Source captures: [logs/verbose-boot-2026-06-21.log](logs/verbose-boot-2026-06-21
 | RAM | 32 MB (29788 kB available to kernel) |
 | Flash | 16 MB NOR (`ar7240-nor0`, 256 sectors), id `0x100000ff` |
 
+## Board & chip identification
+The three main ICs, identified from the board (see [`images/`](images/)):
+
+| Ref | Part | Role |
+|-----|------|------|
+| **U1** | Atheros **AR9331-AL1A** | SoC (MIPS 24Kc + Wi-Fi) |
+| **U3** | EtronTech **EM6AA160TSB** | 32 MB SDRAM |
+| **U12** | Macronix **MX25L12835F** | 16 MB SPI NOR flash |
+
+Top side — SoC (U1) and SDRAM (U3); the NOR flash is on the reverse:
+
+![Board top — AR9331 SoC and SDRAM](images/board-top-overview.jpg)
+![AR9331 SoC and EtronTech SDRAM, closeup](images/soc-and-sdram.jpg)
+
+Reverse side — the Macronix NOR flash (U12):
+
+![Macronix MX25L12835F 16 MB NOR flash](images/nor-flash.jpg)
+
 ## Firmware versions
 | Component | Version |
 |-----------|---------|

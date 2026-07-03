@@ -7,6 +7,24 @@
 - Only one host process can usefully own the port. Keep `screen` closed while the
   logging daemon (below) is running.
 
+### Where to connect — the J2 pads
+On the board, the serial console is broken out on the **J2 pad cluster**:
+
+| J2 pad | Signal |
+|-------:|--------|
+| **2**  | RX  (board input)  |
+| **4**  | TX  (board output) |
+| **8**  | GND |
+
+Wire the USB-TTL adapter with the usual crossover and a common ground:
+
+- adapter **GND** → J2 pad **8**
+- adapter **TX**  → J2 pad **2** (board RX)
+- adapter **RX**  → J2 pad **4** (board TX)
+
+Use a **3.3 V** adapter — the AR9331 UART is 3.3 V logic. Do **not** connect a 5 V adapter or any
+VCC pin; only RX/TX/GND are needed.
+
 Reference manual command: `screen /dev/tty.usbserial-A50285BI 115200` (interactive,
 but locks the port and loses scrollback — prefer the tooling below for automation).
 

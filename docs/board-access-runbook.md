@@ -12,8 +12,9 @@ procedure (verified 2026-07-02), the tools it uses, and every gotcha we hit.
 ## 0. Prerequisites
 
 **Hardware**
-- FTDI USB-TTL adapter wired to the hub's UART pads, **115200 8N1**, enumerating as
-  `/dev/cu.usbserial-*` on macOS. (RX/TX/GND — 3.3 V logic. See `uart-console.md`.)
+- FTDI USB-TTL adapter (**3.3 V**) wired to the **J2** pad cluster: **pad 2 = RX**, **pad 4 = TX**,
+  **pad 8 = GND** (adapter TX→pad 2, adapter RX→pad 4, GND→pad 8). **115200 8N1**, enumerating as
+  `/dev/cu.usbserial-*` on macOS. See [uart-console.md](uart-console.md).
 - The hub's **USB port** cabled to the host = optional (gadget-mode; not used here).
 
 **Host tools** (macOS)

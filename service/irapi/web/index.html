@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harmony Hub</title>
+<style>
+  :root{--bg:#0f1115;--card:#181c23;--fg:#e7eaee;--mut:#9aa4b2;--acc:#4c8bf5;--ok:#3fb950;--bad:#f85149;--line:#262c36}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+  header{padding:16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  header h1{font-size:17px;margin:0;font-weight:600}
+  #mode{margin-left:auto;font-size:12px;color:var(--mut)}
+  main{max-width:640px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);margin:0 0 10px}
+  .row{display:flex;justify-content:space-between;gap:8px;padding:3px 0}
+  .row .k{color:var(--mut)} .row .v{font-variant-numeric:tabular-nums;text-align:right;word-break:break-all}
+  button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:9px 14px;font-size:14px;font-weight:600;cursor:pointer}
+  button.sec{background:#222834;color:var(--fg);border:1px solid var(--line)}
+  button.danger{background:var(--bad)}
+  button:disabled{opacity:.5}
+  input{width:100%;background:#0f131a;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:9px;font-size:14px;margin:6px 0}
+  .nets{display:flex;flex-direction:column;gap:6px;margin:8px 0;max-height:190px;overflow:auto}
+  .net{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#0f131a;border:1px solid var(--line);border-radius:8px;cursor:pointer}
+  .net.sel{border-color:var(--acc)}
+  .net small{color:var(--mut)}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  .msg{font-size:13px;margin-top:8px;min-height:16px}
+  .msg.ok{color:var(--ok)} .msg.err{color:var(--bad)} .msg.mut{color:var(--mut)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--mut)}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--bad)}
+  select{width:100%;background:#0f131a;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:9px;font-size:14px;margin:2px 0 8px}
+  .fns{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:4px 0}
+  .fns button{background:#222834;border:1px solid var(--line);color:var(--fg);font-weight:500}
+  .fns button:active{background:var(--acc);border-color:var(--acc)}
+</style>
+</head>
+<body>
+<header><span class="dot" id="dot"></span><h1>Harmony Hub</h1><span id="mode">…</span></header>
+<main>
+  <div class="card" id="statusCard">
+    <h2>Status</h2>
+    <div id="status"><div class="row"><span class="k">loading…</span></div></div>
+  </div>
+
+  <div class="card">
+    <h2>Remote</h2>
+    <select id="typ" onchange="loadBrands()"><option value="">— device type —</option></select>
+    <select id="brand" onchange="loadDevs()"><option value="">— brand —</option></select>
+    <select id="dev" onchange="loadFns()"><option value="">— model —</option></select>
+    <div class="fns" id="fns"></div>
+    <div class="msg mut" id="remMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Manual command</h2>
+    <input id="rawus" placeholder="raw µs: 9000,4500,560,560,…" autocomplete="off">
+    <input id="rawcar" value="38000" placeholder="carrier Hz" autocomplete="off">
+    <div class="btns"><button onclick="sendRaw()">Send raw</button></div>
+    <div class="msg mut" id="rawMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Wi-Fi</h2>
+    <div class="btns"><button class="sec" id="scanBtn" onclick="scan()">Scan networks</button></div>
+    <div class="nets" id="nets"></div>
+    <input id="ssid" placeholder="SSID" autocomplete="off">
+    <input id="psk" type="password" placeholder="Password (blank = open)" autocomplete="off">
+    <div class="btns"><button onclick="connect()">Save &amp; connect</button></div>
+    <div class="msg mut" id="wifiMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>IR test</h2>
+    <div class="btns">
+      <button class="sec" onclick="irTest()">Send test blast</button>
+    </div>
+    <div class="msg mut" id="irMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Maintenance</h2>
+    <div class="btns">
+      <button class="sec" onclick="reboot()">Reboot</button>
+      <button class="danger" onclick="factory()">Factory reset</button>
+    </div>
+    <div class="msg mut" id="maintMsg"></div>
+  </div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+let sel=null;
+async function api(path,opt){const r=await fetch(path,opt);const t=await r.text();try{return{ok:r.ok,d:JSON.parse(t)}}catch(e){return{ok:r.ok,d:{raw:t}}}}
+function rows(o){return Object.entries(o).map(([k,v])=>`<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('')}
+async function load(){
+  const {ok,d}=await api('/api/status');
+  if(!ok){$('#status').innerHTML='<div class="row"><span class="k err">unreachable</span></div>';return}
+  $('#mode').textContent=d.mode||'';
+  $('#dot').className='dot '+(d.ir==='ready'?'on':'off');
+  $('#status').innerHTML=rows({Mode:d.mode||'?',SSID:d.ssid||'—',IP:d.ip||'—',IR:d.ir||'?',Uptime:(d.uptime||'?')+'s',Version:d.version||''});
+}
+function fill(sel,items,ph,val,txt){sel.innerHTML='<option value="">'+ph+'</option>';items.forEach(x=>{const o=document.createElement('option');o.value=val(x);o.textContent=txt(x);sel.appendChild(o)})}
+async function loadTypes(){
+  const {d}=await api('/api/ir/types');
+  fill($('#typ'),d.types||[],'— device type —',x=>x,x=>x.replace(/_/g,' '));
+}
+async function loadBrands(){
+  $('#fns').innerHTML='';fill($('#dev'),[],'— model —',x=>x,x=>x);
+  const t=$('#typ').value; if(!t){fill($('#brand'),[],'— brand —',x=>x,x=>x);return}
+  const {d}=await api('/api/ir/brands?type='+encodeURIComponent(t));
+  fill($('#brand'),d.brands||[],'— brand —',x=>x,x=>x);
+}
+async function loadDevs(){
+  $('#fns').innerHTML='';
+  const t=$('#typ').value,b=$('#brand').value; if(!b){fill($('#dev'),[],'— model —',x=>x,x=>x);return}
+  const {d}=await api('/api/ir/devices?type='+encodeURIComponent(t)+'&brand='+encodeURIComponent(b));
+  fill($('#dev'),d.devices||[],'— model —',x=>x.id,x=>x.model);
+}
+async function loadFns(){
+  const dev=$('#dev').value,box=$('#fns');box.innerHTML='';
+  if(!dev)return;
+  const {d}=await api('/api/ir/functions?device='+encodeURIComponent(dev));
+  (d.functions||[]).forEach(f=>{const b=document.createElement('button');b.textContent=f;b.onclick=()=>fire(dev,f);box.appendChild(b)});
+}
+async function fire(dev,fn){
+  msg('#remMsg','Sending '+fn+'…','mut');
+  const {ok,d}=await api('/api/ir/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device:dev,function:fn})});
+  msg('#remMsg', ok?('sent '+fn+' ✓'):('error: '+((d&&d.error)||'failed')), ok?'ok':'err');
+}
+async function sendRaw(){
+  const raw=$('#rawus').value.trim().split(',').map(x=>parseInt(x.trim())).filter(x=>x>0);
+  const car=parseInt($('#rawcar').value)||38000;
+  if(!raw.length){msg('#rawMsg','enter comma-separated µs (mark,space,…)','err');return}
+  msg('#rawMsg','sending '+raw.length+' intervals…','mut');
+  const {ok,d}=await api('/api/ir/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({raw_us:raw,carrier:car})});
+  msg('#rawMsg', ok?('sent ✓'):('error: '+((d&&d.error)||'failed')), ok?'ok':'err');
+}
+async function scan(){
+  const b=$('#scanBtn');b.disabled=true;b.textContent='Scanning…';
+  const {d}=await api('/api/wifi/scan');
+  b.disabled=false;b.textContent='Scan networks';
+  const nets=$('#nets');nets.innerHTML='';
+  (d.networks||[]).forEach(n=>{
+    const el=document.createElement('div');el.className='net';
+    el.innerHTML=`<span>${n.ssid||'(hidden)'}</span><small>${n.signal||''} ${n.enc?'🔒':''}</small>`;
+    el.onclick=()=>{document.querySelectorAll('.net').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');sel=n.ssid;$('#ssid').value=n.ssid;$('#psk').focus()};
+    nets.appendChild(el);
+  });
+  if(!(d.networks||[]).length)nets.innerHTML='<div class="msg mut">no networks found</div>';
+}
+async function connect(){
+  const ssid=$('#ssid').value.trim(),psk=$('#psk').value;
+  if(!ssid){msg('#wifiMsg','SSID required','err');return}
+  msg('#wifiMsg','Saving & connecting… the hub will switch networks; reconnect to it after.','mut');
+  await api('/api/wifi/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ssid,psk})});
+  msg('#wifiMsg','Applied. If it joins '+ssid+', find its new IP on that network.','ok');
+}
+async function irTest(){
+  msg('#irMsg','Sending…','mut');
+  const {ok,d}=await api('/api/ir/test',{method:'POST'});
+  msg('#irMsg',(d&&d.detail)||(ok?'sent':'error'),ok?'ok':'err');
+}
+async function reboot(){if(!confirm('Reboot the hub?'))return;msg('#maintMsg','Rebooting…','mut');await api('/api/reboot',{method:'POST'})}
+async function factory(){if(!confirm('Factory reset: erases the saved Wi-Fi network and learned IR codes, then reboots into setup mode (the Harmony-Setup Wi-Fi). Continue?'))return;msg('#maintMsg','Resetting…','mut');await api('/api/factory-reset',{method:'POST'})}
+function msg(sel,t,c){const e=$(sel);e.textContent=t;e.className='msg '+(c||'mut')}
+load();setInterval(load,5000);loadTypes();
+</script>
+</body>
+</html>

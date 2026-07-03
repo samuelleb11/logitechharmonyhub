@@ -1,0 +1,5 @@
+# Cross-link mips-unknown-linux-musl on macOS with the bundled rust-lld + self-contained
+# musl (see service/rustprobe / docs: rust-mips-toolchain memory). Build via service/build-mips.sh.
+[target.mips-unknown-linux-musl]
+linker = "/Users/sysop/.rustup/toolchains/1.74.0-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-lld"
+rustflags = ["-C", "link-self-contained=yes", "-C", "linker-flavor=ld.lld", "-C", "relocation-model=static", "-C", "link-arg=-no-pie", "-L", "native=/tmp/mipslibs"]

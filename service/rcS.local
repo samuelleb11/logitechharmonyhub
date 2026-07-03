@@ -1,0 +1,79 @@
+#!/bin/sh
+# /etc/init.d/rcS.local  —  STANDALONE IR appliance bring-up (OVERLAY FILE; delete to revert).
+#
+# Stock /etc/init.d/rcS does `source /etc/init.d/rcS.local` at line ~43, AFTER: mount -a
+# (tmpfs on /var/volatile), loading /etc/modules (incl. cc2544, ath_udc, gadgetfs), and
+# `ifup lo` — but BEFORE dbus/hal/wifi/luaworks. We do our own bring-up here and `exit 0`
+# so the sourced shell (= rcS) stops -> the stock app (luaworks/luadraws) never starts.
+#
+# Reversible (rm this file); touches no flash partition. Must be chmod +x (rcS checks -x).
+# Devshell token: harmonydev   (dev tool on trusted LAN; not hardened SSH).
+
+LOGF=/var/volatile/log/irboot.log
+log() { echo "[irboot] $*" >> "$LOGF" 2>/dev/null; }
+: > "$LOGF" 2>/dev/null
+log "start $(date 2>/dev/null)"
+
+# --- UART FALLBACK: passwordless shell on ttyS0 -----------------------------------------
+# Works even though stock bootargs use console=none, and nothing pollutes ttyS0 because we
+# skip luaworks. So a Wi-Fi failure never locks us out — just attach the FTDI, no U-Boot catch.
+getty -n -l /bin/sh -L ttyS0 115200 vt100 &
+log "uart fallback shell on ttyS0 pid=$!"
+
+# --- IR: DIRECT to /dev/i2s (ath_i2s.ko loaded by rcS from /etc/modules) ------------------
+# We drive the AR9331 I2S peripheral ourselves (irapi i2s driver) and do NOT start Logitech's
+# hal: hal holds /dev/i2s exclusively, which would block our transmit path. cc2544 (RF/receive)
+# is not needed to blast IR. lo is still handy for local tooling.
+ifconfig lo 127.0.0.1 netmask 255.0.0.0 up 2>/dev/null
+log "IR via /dev/i2s (hal skipped)"
+
+# --- Wi-Fi: try STATION; fall back to our own AP if it can't get an IP -------------------
+# (AR9331 does STA+AP; here we use one or the other. AP fallback = always reachable.)
+M=/lib/modules/$(uname -r)
+for m in asf adf ath_hal ath_rate_atheros ath_dev umac; do
+    [ -d /sys/module/$m ] || insmod $M/$m.ko 2>/dev/null
+done
+i=0; while [ ! -d /sys/class/net/wifi0 ] && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done
+
+STA_OK=0
+if grep -q 'ssid=' /etc/wifi/wpa_supplicant.conf 2>/dev/null; then
+    [ -d /sys/class/net/ath0 ] || wlanconfig ath0 create wlandev wifi0 wlanmode sta 2>/dev/null
+    ifconfig ath0 up 2>/dev/null
+    mkdir -p /var/run/wpa_supplicant
+    wpa_supplicant -B -Dmadwifi -iath0 -c /etc/wifi/wpa_supplicant.conf 2>/dev/null
+    i=0; while [ $i -lt 25 ]; do
+        wpa_cli -i ath0 status 2>/dev/null | grep -q COMPLETED && break
+        sleep 1; i=$((i+1))
+    done
+    if wpa_cli -i ath0 status 2>/dev/null | grep -q COMPLETED; then
+        udhcpc -i ath0 -b -t 6 -T 2 -A 10 -s /usr/share/udhcpc/default.script 2>/dev/null
+        sleep 3
+        ifconfig ath0 2>/dev/null | grep -q 'inet addr' && STA_OK=1
+    fi
+fi
+IP=$(ifconfig ath0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+log "station ok=$STA_OK ip=$IP"
+
+if [ "$STA_OK" != 1 ]; then
+    # No config, or couldn't connect -> bring up our own AP so we're always reachable.
+    log "no station -> AP fallback (SSID Harmony-Setup, 192.168.4.1)"
+    killall wpa_supplicant 2>/dev/null
+    wlanconfig ath0 destroy 2>/dev/null
+    wlanconfig ath1 create wlandev wifi0 wlanmode ap 2>/dev/null
+    iwconfig ath1 essid Harmony-Setup 2>/dev/null
+    iwconfig ath1 channel 1 2>/dev/null
+    ifconfig ath1 192.168.4.1 netmask 255.255.255.0 up 2>/dev/null
+    [ -x /root/irapi ] && /root/irapi dhcpd --iface ath1 --server 192.168.4.1 --start 192.168.4.10 --count 20 >/var/volatile/log/dhcpd.log 2>&1 &
+    log "AP up: Harmony-Setup 192.168.4.1 dhcpd pid=$!"
+fi
+
+# --- devshell + web management UI (reachable via station IP OR the AP 192.168.4.1) -----
+if [ -x /root/irapi ]; then
+    /root/irapi devshell --port 2222 --token harmonydev >/var/volatile/log/devshell.log 2>&1 &
+    log "devshell :2222 pid=$!"
+    /root/irapi serve --port 80 >/var/volatile/log/web.log 2>&1 &
+    log "web UI :80 pid=$!"
+fi
+
+log "done; skipping luaworks (standalone)"
+exit 0

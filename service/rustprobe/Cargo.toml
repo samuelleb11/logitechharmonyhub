@@ -1,0 +1,17 @@
+[package]
+name = "rustprobe"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rustprobe"
+path = "src/main.rs"
+
+# Smallest possible static binary; panic=abort also avoids needing libunwind,
+# which sidesteps the Tier-3 mips-musl `-lunwind` link issue.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,18 @@
+[package]
+name = "irapi"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone IR-over-HTTP appliance for the Logitech Harmony Hub (single-threaded, static mips-musl)"
+
+[[bin]]
+name = "irapi"
+path = "src/main.rs"
+
+# Smallest static binary; panic=abort also avoids libunwind (Tier-3 mips-musl -lunwind issue).
+# Single-threaded by design — the kernel has no CONFIG_FUTEX, so NO thread::spawn / contended locks.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

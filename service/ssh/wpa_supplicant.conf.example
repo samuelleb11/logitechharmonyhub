@@ -1,0 +1,21 @@
+# Wi-Fi credentials for the Harmony Hub standalone appliance.
+# Copy to the device as /etc/wifi/wpa_supplicant.conf, fill in SSID + PSK, chmod 600.
+# NEVER commit the real file with credentials.
+#
+# This build's wpa_supplicant is v0.7.x with the WEXT/madwifi driver backend only
+# (no nl80211). The Atheros ath_hal reads regulatory/cal data from the mfg partition
+# (mtd6) automatically at module load — do not touch mtd6.
+
+ctrl_interface=/var/run/wpa_supplicant
+update_config=1
+ap_scan=1
+eapol_version=1
+
+network={
+    ssid="YOUR_SSID_HERE"
+    psk="YOUR_WPA2_PASSWORD_HERE"
+    key_mgmt=WPA-PSK
+    proto=RSN WPA
+    pairwise=CCMP TKIP
+    group=CCMP TKIP
+}

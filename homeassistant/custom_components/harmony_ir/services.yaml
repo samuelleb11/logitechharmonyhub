@@ -1,0 +1,36 @@
+send_raw:
+  name: Send raw IR
+  description: Blast an arbitrary raw mark/space microsecond sequence through the IR emitter.
+  fields:
+    entity_id:
+      name: Remote
+      required: true
+      selector:
+        entity:
+          integration: harmony_ir
+          domain: remote
+    raw_us:
+      name: Raw timing (µs)
+      description: Alternating mark,space,… microseconds, starting with a mark.
+      required: true
+      example: "[9000, 4500, 560, 560, 560, 1690, 560, 40000]"
+      selector:
+        object:
+    carrier:
+      name: Carrier (Hz)
+      default: 38000
+      selector:
+        number:
+          min: 30000
+          max: 60000
+          unit_of_measurement: Hz
+          mode: box
+    select:
+      name: Emitter select
+      description: Bitmask of the IR outputs (bit0/1/2). 7 = all.
+      default: 7
+      selector:
+        number:
+          min: 0
+          max: 7
+          mode: box

@@ -1,37 +1,55 @@
-# Logitech Harmony Hub (Pimento) — Reverse Engineering Notes
+# Documentation
 
-Working notes and gathered specs for the Logitech Harmony Hub, accessed over its
-TTL UART console.
+Guides and reverse-engineering notes for turning a Logitech Harmony Hub into a standalone IR
+appliance. Start with the [project README](../README.md) for the overview.
+
+## Using it
 
 | Doc | Contents |
 |-----|----------|
-| [board-access-runbook.md](board-access-runbook.md) | **⭐ The end-to-end playbook:** powered-off board → untethered root shell over Wi-Fi (UART, U-Boot, uploads, Wi-Fi, devshell) + every gotcha + the sideload-packaging plan |
-| [hardware-specs.md](hardware-specs.md) | SoC, memory, flash layout, **free space**, **userland tool inventory**, peripherals, MACs, firmware versions |
-| [uart-console.md](uart-console.md) | Physical access, baud (**locked to 115200**), the `uartctl.py` tooling, catching U-Boot |
-| [boot-and-uboot.md](boot-and-uboot.md) | U-Boot environment, boot flow, readable verbose boot / root shell |
+| [getting-started.md](getting-started.md) | **⭐ Start here.** Build the firmware, get it onto the hub, connect Wi-Fi, use the web UI, update over the air, add to Home Assistant |
+| [http-api.md](http-api.md) | The appliance's HTTP API reference (every endpoint, with `curl` examples) |
+| [cli.md](cli.md) | The `irapi` command-line reference (appliance + developer/RE verbs) |
+| [../homeassistant/README.md](../homeassistant/README.md) | The Home Assistant custom integration |
+
+## Hardware & access (the reverse-engineering journey)
+
+| Doc | Contents |
+|-----|----------|
+| [board-access-runbook.md](board-access-runbook.md) | **The end-to-end playbook:** powered-off board → untethered root shell over Wi-Fi (UART, U-Boot, uploads, Wi-Fi, devshell) + every gotcha |
+| [hardware-specs.md](hardware-specs.md) | SoC, memory, flash layout, free space, userland tool inventory, peripherals, firmware versions |
+| [uart-console.md](uart-console.md) | Physical UART access, baud (locked 115200), the `uartctl.py` tooling, catching U-Boot |
+| [boot-and-uboot.md](boot-and-uboot.md) | U-Boot environment, boot flow, getting a readable verbose boot / root shell |
 | [firmware-backup.md](firmware-backup.md) | How the full 16 MB flash was backed up (lua+RLE+base64 over UART) and verified |
-| [usb-gadget-console.md](usb-gadget-console.md) | Using the USB port as a console/network gadget (no soldering) — validated substrate + plan |
-| [ir-api-project.md](ir-api-project.md) | **The project:** expose IR over an HTTP/gRPC API — architecture, Go vs Rust, recovery |
+| [usb-gadget-console.md](usb-gadget-console.md) | Using the USB port as a console/network gadget (no soldering) |
+
+## Design & IR reverse-engineering
+
+| Doc | Contents |
+|-----|----------|
+| [ir-api-project.md](ir-api-project.md) | The project plan: exposing IR over a network API — architecture, language choice, recovery |
+| [ir-service-buildplan.md](ir-service-buildplan.md) | The Rust appliance build plan and toolchain recipe |
+| [ir-hardware-reverse-engineering.raw.txt](ir-hardware-reverse-engineering.raw.txt) | Research notes: how IR TX/RX maps onto the AR9331 I2S peripheral |
+| [ir-protocol-reverse-engineering.raw.txt](ir-protocol-reverse-engineering.raw.txt) | Research notes: the IR carrier/bitstream/blob format |
+| [ir-database-integration-plan.raw.txt](ir-database-integration-plan.raw.txt) | Research notes: building the offline code library |
+| [ir-receive-learn-plan.raw.txt](ir-receive-learn-plan.raw.txt) | Research notes: the IR receive/learn path |
 | [logs/](logs/) | Raw captured console logs (reference artifacts) |
 
-## TL;DR
+## The device at a glance
+
 - **Device:** Logitech Harmony Hub, codename **Pimento**.
-- **SoC:** Atheros **AR9331 "Hornet"** (MIPS 24Kc), board **AP121**. 32 MB RAM, 16 MB NOR flash.
-- **Console:** `/dev/cu.usbserial-A50285BI` @ **115200 8N1**, FTDI USB-TTL adapter.
-- **Bootloader:** U-Boot 1.1.4 (prompt `ar7240>`, `bootdelay=0` — must flood Enter to interrupt).
-- **OS:** Linux 2.6.31 + BusyBox 1.13.4 (Poky/Yocto build, Feb 2020).
-- Stock boot has `console=none`; readable boot needs a `bootargs` override (see boot doc).
-- **Backup:** full 16 MB flash captured & verified (whole-chip md5 `48154ae8…`) — see [firmware-backup.md](firmware-backup.md) and [`../backups/`](../backups/).
+- **SoC:** Atheros **AR9331 "Hornet"** (MIPS 24Kc, big-endian), board **AP121**. 32 MB RAM, 16 MB NOR flash.
+- **OS:** Linux 2.6.31 + BusyBox 1.13.4 (Poky/Yocto, Feb 2020). Kernel has **no `CONFIG_FUTEX`**.
+- **Console:** FTDI USB-TTL @ **115200 8N1**; U-Boot 1.1.4 (`bootdelay=0` — flood Enter to interrupt).
+- **Backup:** full 16 MB flash captured & verified — see [firmware-backup.md](firmware-backup.md).
 
-## Project goal & decisions
-Turn the hub into an **IR blaster/receiver with a network API (HTTP/gRPC)**. Verified by
-extracting the stock rootfs (`backups/mtd3.bin`). Key calls:
-- **IR path (verified):** the stock HAL daemon (`/usr/bin/hal`) owns the `cc2544` IR chip via `/dev/rfspi`; it already exposes IR over **LTCP on `127.0.0.1:16716`** and a **LAN HTTP API on `:8088`**. Our service is an HTTP front end that **translates to LTCP / proxies `:8088`** — don't open the device directly.
-- **Keep the stock 2.6.31 kernel + `cc2544.ko`** (locked to that kernel; OpenWrt would lose IR). Add a userland service; persist it on the jffs2 overlay via `/etc/init.d/rcS.local` — **no flashing**.
-- **Language: Go is RULED OUT, Rust is VERIFIED** — tested on hardware. The kernel has **no `CONFIG_FUTEX`**, so Go's runtime crashes at startup (`futex ENOSYS`, all versions). A **single-threaded static-musl Rust** binary runs cleanly (TCP+UDP, exit 0) — **Rust is the chosen language** (keep it single-threaded). Build recipe in `service/build-mips.sh` (Rust 1.74 + bundled rust-lld, no Docker/gcc). Deploy **native** — UPX's stub SIGTRAPs on this kernel. (Lua, already on-device with luasocket, remains a no-cross-compile alternative.) See [ir-api-project.md](ir-api-project.md).
-- **⚠️ Real blocker = networking:** only `lo` is up. Need **USB-ethernet gadget** (one cable = power + ssh console + API) or WiFi. See [usb-gadget-console.md](usb-gadget-console.md).
-- **Recovery:** U-Boot serial recovery covers all realistic mistakes while mtd0 is intact; never erase mtd0 or mtd6/mfg. SPI programmer (CH341 *not* required) is last-resort only.
+## How the appliance actually drives IR
 
-See [ir-api-project.md](ir-api-project.md) for the full verified plan.
+The stock closed `hal` daemon owns the IR hardware, but the appliance **does not use it**. IR
+transmit and receive were reverse-engineered down to the SoC's **I2S audio peripheral**
+(`/dev/i2s`): a modulated carrier bitstream is DMA'd out the emitter GPIOs to transmit, and the
+demodulated receiver line is oversampled and run-length-decoded to learn. The service is
+**single-threaded static-musl Rust** (Go can't run — no futex; see [`../experiments/`](../experiments/)),
+zero runtime crates, deployed native (UPX's stub `SIGTRAP`s on this kernel).
 
-> Dates in these docs are absolute. Gathered 2026-06-21.
+> Dates in these docs are absolute. Original RE gathered 2026-06-21.

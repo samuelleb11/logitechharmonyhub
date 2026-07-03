@@ -9,6 +9,12 @@ IPC, and init scripts). The IR path, the integration point, the language choice,
 the recovery story are all settled. **The one genuine blocker is networking** (see
 below), not IR.
 
+> **SUPERSEDED (Route A / hal).** This feasibility doc concludes to reuse Logitech's stock
+> `/usr/bin/hal` daemon and drive IR over LTCP (Route A). That plan was **later abandoned**: the
+> shipping `irapi` drives the AR9331 I2S peripheral (`/dev/i2s`) **directly** and does **not** use
+> `hal`/LTCP at all. Everything below about `hal`, LTCP `:16716`, the stock `:8088` API, and the
+> CC2544 is retained as **reverse-engineering history**, not a description of the current appliance.
+
 ## Requirements (decided with the user, 2026-06-21)
 - **Standalone appliance** — do NOT run the Harmony cloud/app (luaworks). Reuse the stock
   `/usr/bin/hal` daemon (we start it: `insmod cc2544.ko` → load `cc2544.bin` firmware → run
@@ -119,7 +125,7 @@ The pivot, in order of pragmatism:
   (an uncontended `Mutex` is a lock-free atomic fast path, no syscall), so a
   **single-threaded** service never touches it. **Keep it single-threaded.** Build recipe
   (Rust 1.74 — last Tier-2 mips-musl with prebuilt self-contained std; bundled `rust-lld`;
-  no Docker, no external gcc) is in `service/build-mips.sh` + `service/rustprobe/.cargo/config.toml`.
+  no Docker, no external gcc) is in `service/build-mips.sh` + `experiments/rustprobe/.cargo/config.toml`.
   Native binary ~547 KB (`opt-level=z`+lto+`panic=abort`+strip).
 - **C, static musl, single-threaded** — the safest fallback; smallest; full control.
 
@@ -136,7 +142,7 @@ The pivot, in order of pragmatism:
   `zip -9` the binary (BusyBox has `unzip`, not gzip) → base64 on host →
   `tools/upload_file.py <b64> <devpath> 800` (chunked **unquoted** `printf %s … >> file`
   with a per-chunk sentinel handshake) → `lua tools/b64decode.lua` on device → `unzip` →
-  md5-verify. Probe source: `service/probe/main.go`.
+  md5-verify. Probe source: `experiments/probe/main.go`.
 
 ## Deployment — no flashing
 `/` is unionfs(rw) over the jffs2 `data` partition + squashfs root, so our binary +

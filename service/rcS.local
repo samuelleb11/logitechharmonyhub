@@ -25,7 +25,10 @@ log "uart fallback shell on ttyS0 pid=$!"
 # hal: hal holds /dev/i2s exclusively, which would block our transmit path. cc2544 (RF/receive)
 # is not needed to blast IR. lo is still handy for local tooling.
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up 2>/dev/null
-log "IR via /dev/i2s (hal skipped)"
+log "IR TX via /dev/i2s (hal skipped)"
+# cc2544 IR-receiver front-end (for LEARN/capture, which reads the demodulated line via I2S-RX):
+# cc2544.ko is already insmod'd from /etc/modules, so /dev/rffw exists; push its firmware.
+[ -c /dev/rffw ] && cat /lib/firmware/cc2544.bin > /dev/rffw 2>/dev/null && log "cc2544 IR-RX front-end fw loaded"
 
 # --- Wi-Fi: try STATION; fall back to our own AP if it can't get an IP -------------------
 # (AR9331 does STA+AP; here we use one or the other. AP fallback = always reachable.)

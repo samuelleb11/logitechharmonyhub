@@ -1,21 +1,17 @@
-//! irapi — standalone IR-over-HTTP appliance for the Harmony Hub.
+//! irapi — standalone IR blaster/receiver appliance for the re-flashed Harmony Hub.
 //!
-//! Single-threaded, static mips-musl, zero runtime crates (the kernel has no futex).
-//! M0/M1 scaffold: CLI to fire/learn IR through the stock `hal` over LTCP. The HTTP
-//! server, device DB, and full REST API land in M2–M4 (see docs/ir-service-buildplan.md).
+//! Single-threaded, static big-endian mips-musl, zero runtime crates (the kernel has no futex).
+//! Drives the AR9331 I2S peripheral directly (`i2s`, `midea`, `enc`, `db`, `learn`) and serves an
+//! HTTP API + web UI (`web`) — Logitech's `hal` is not used. See docs/ for the reverse-engineering.
 
 mod db;
 mod enc;
 mod i2s;
-mod ir;
 mod json;
+mod learn;
 mod mem;
-mod util;
+mod midea;
 mod web;
-
-use ir::{IrBackend, IrCode, LtcpBackend, MockBackend};
-
-const DEFAULT_HAL: &str = "127.0.0.1:16716";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -26,22 +22,18 @@ fn run(args: &[String]) -> i32 {
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let rest = &args[args.len().min(2)..];
     match cmd {
-        "blast" => cmd_blast(rest),
-        "selftest" => cmd_selftest(rest),
-        "loopback" => cmd_loopback(rest),
-        "rawsend" => cmd_rawsend(rest),
+        "serve" => cmd_serve(rest),
+        "fire" => cmd_fire(rest),
+        "ac" => cmd_ac(rest),
+        "learn" => cmd_learn(rest),
+        "codes" => cmd_codes(rest),
         "i2stest" => cmd_i2stest(rest),
         "i2sraw" => cmd_i2sraw(rest),
+        "i2scap" => cmd_i2scap(rest),
         "i2sgpiosweep" => cmd_i2sgpiosweep(rest),
-        "fire" => cmd_fire(rest),
-        "codes" => cmd_codes(rest),
         "peek" => cmd_peek(rest),
         "poke" => cmd_poke(rest),
         "regs" => cmd_regs(rest),
-        "learn" => cmd_learn(rest),
-        "health" => cmd_health(rest),
-        "mock" => cmd_mock(rest),
-        "serve" => cmd_serve(rest),
         "devshell" => cmd_devshell(rest),
         "dhcpd" => cmd_dhcpd(rest),
         "" | "-h" | "--help" | "help" => {
@@ -62,21 +54,25 @@ fn run(args: &[String]) -> i32 {
 
 fn usage() {
     eprintln!(
-        "irapi {} — Harmony Hub IR appliance\n\
+        "irapi {} — standalone IR blaster/receiver for the re-flashed Harmony Hub\n\
+         (drives the AR9331 I2S peripheral directly; no Logitech hal)\n\
          \n\
          USAGE:\n\
-         \x20 irapi blast    [--host H] (--blob-b64 B | --blob-hex H | --raw-hex H)\n\
-         \x20                [--ports 0,1,2] [--repeat 1] [--carrier 38000] [--duty 33]\n\
-         \x20 irapi selftest [--host H] [--time 1000] [--ports 7]   # hal's built-in 40kHz test emit\n\
-         \x20 irapi loopback [--host H]                             # closed-loop RF self-test (no camera)\n\
-         \x20 irapi learn    [--host H] [--time 5000] [--port 0] [--listen 8000]  # ir_cap capture dump\n\
-         \x20 irapi health   [--host H]\n\
-         \x20 irapi mock                 # exercise the stack with a MockBackend (no device)\n\
-         \x20 irapi serve  ...           # (M2) HTTP/JSON API\n\
+         \x20 irapi serve  [--port 80]                              # the HTTP API + web UI (the appliance)\n\
+         \x20 irapi fire   --device ID --function NAME [--select 7] # fire a code from the library\n\
+         \x20 irapi ac     [--power on|off] [--mode cool] [--fan auto] [--temp 22]  # Midea/Danby AC\n\
+         \x20 irapi learn  [--secs 15] [--device ID --function NAME]  # capture a remote button\n\
+         \x20 irapi codes  [--device ID]                            # list library devices / functions\n\
          \n\
-         Default --host = {}",
+         DEV / RE tools (direct hardware access):\n\
+         \x20 irapi i2sraw --us m,s,m,s,... [--carrier 38000] [--select 7]  # blast a raw timing seq\n\
+         \x20 irapi i2stest [--carrier 38000] [--ms 1000]           # continuous carrier (camera check)\n\
+         \x20 irapi i2scap  [--secs 8]                              # dump a raw IR capture (calibration)\n\
+         \x20 irapi i2sgpiosweep                                    # sweep emitter-select GPIOs\n\
+         \x20 irapi peek/poke/regs ...                              # /dev/mem MMIO (can hang the SoC)\n\
+         \x20 irapi devshell [--port 2222] [--token T]              # untethered shell (trusted LAN only)\n\
+         \x20 irapi dhcpd ...                                       # tiny DHCP server for AP-fallback mode",
         env!("CARGO_PKG_VERSION"),
-        DEFAULT_HAL
     );
 }
 
@@ -100,153 +96,6 @@ fn flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
-fn parse_ports(s: &str) -> Vec<u8> {
-    s.split(',')
-        .filter_map(|p| p.trim().parse::<u8>().ok())
-        .collect()
-}
-
-fn cmd_blast(args: &[String]) -> i32 {
-    let host = opt(args, "--host").unwrap_or(DEFAULT_HAL);
-    let mut be = LtcpBackend::new(host);
-
-    if let Some(raw) = opt(args, "--raw-hex") {
-        // M1: replay exact captured wire bytes.
-        match util::hex_decode(raw) {
-            Ok(bytes) => match be.send_raw(&bytes) {
-                Ok(reply) => {
-                    println!("sent {} raw bytes; reply {}", bytes.len(), reply.detail());
-                    0
-                }
-                Err(e) => {
-                    eprintln!("send error: {}", e);
-                    1
-                }
-            },
-            Err(e) => {
-                eprintln!("bad --raw-hex: {}", e);
-                2
-            }
-        }
-    } else {
-        let blob = match (opt(args, "--blob-b64"), opt(args, "--blob-hex")) {
-            (Some(b), _) => util::b64_decode(b),
-            (_, Some(h)) => util::hex_decode(h),
-            (None, None) => {
-                eprintln!("blast needs --blob-b64, --blob-hex, or --raw-hex");
-                return 2;
-            }
-        };
-        let blob = match blob {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("bad blob: {}", e);
-                return 2;
-            }
-        };
-        let code = IrCode {
-            encoding: "ltcp_blob".into(),
-            carrier_hz: opt(args, "--carrier").and_then(|s| s.parse().ok()).unwrap_or(38000),
-            duty: opt(args, "--duty").and_then(|s| s.parse().ok()).unwrap_or(33),
-            ports: {
-                let p = parse_ports(opt(args, "--ports").unwrap_or("0,1,2"));
-                if p.is_empty() {
-                    vec![0, 1, 2]
-                } else {
-                    p
-                }
-            },
-            repeat: opt(args, "--repeat").and_then(|s| s.parse().ok()).unwrap_or(1),
-            blob,
-        };
-        if flag(args, "--dry-run") {
-            let frame = be.build_ir_send_frame(&code);
-            println!(
-                "[dry-run] ports={:?} mask={:#x}; provisional frame ({} bytes):\n{}",
-                code.ports,
-                code.port_mask(),
-                frame.len(),
-                util::hex_encode(&frame)
-            );
-            return 0;
-        }
-        eprintln!(
-            "[blast] {} byte blob, ports={:?} (mask {:#x}), repeat={} -> {}",
-            code.blob.len(),
-            code.ports,
-            code.port_mask(),
-            code.repeat,
-            host
-        );
-        match be.send_ir(&code) {
-            Ok(reply) => {
-                println!(
-                    "blast {}; reply {}",
-                    if reply.ok() { "ok" } else { "NON-200" },
-                    reply.detail()
-                );
-                if reply.ok() {
-                    0
-                } else {
-                    1
-                }
-            }
-            Err(e) => {
-                eprintln!("blast error: {}", e);
-                1
-            }
-        }
-    }
-}
-
-/// Self-test: hal emits its built-in 40 kHz IR pattern (no learned code). Point a phone
-/// camera at the front IR window to confirm the emitter physically fires.
-fn cmd_selftest(args: &[String]) -> i32 {
-    let host = opt(args, "--host").unwrap_or(DEFAULT_HAL);
-    let time: u32 = opt(args, "--time").and_then(|s| s.parse().ok()).unwrap_or(1000);
-    let ports: u32 = opt(args, "--ports").and_then(|s| s.parse().ok()).unwrap_or(7);
-    let mut be = LtcpBackend::new(host);
-    eprintln!(
-        "[selftest] /ir/ir_test time={} ports={} -> {}  (watch the front IR window w/ a phone camera)",
-        time, ports, host
-    );
-    match be.ir_test(time, ports) {
-        Ok(r) => {
-            println!("ir_test reply: {}", r.detail());
-            if r.ok() {
-                0
-            } else {
-                1
-            }
-        }
-        Err(e) => {
-            eprintln!("ir_test error: {}", e);
-            1
-        }
-    }
-}
-
-/// Closed-loop RF self-test: hal emits its 62.5 kHz pattern and receives it back to
-/// validate the carrier. Needs no camera/external receiver.
-fn cmd_loopback(args: &[String]) -> i32 {
-    let host = opt(args, "--host").unwrap_or(DEFAULT_HAL);
-    let mut be = LtcpBackend::new(host);
-    eprintln!("[loopback] /ir/ir_loopback (closed-loop RF self-test) -> {}", host);
-    match be.ir_loopback() {
-        Ok(r) => {
-            println!("ir_loopback reply: {}", r.detail());
-            if r.ok() {
-                0
-            } else {
-                1
-            }
-        }
-        Err(e) => {
-            eprintln!("ir_loopback error: {}", e);
-            1
-        }
-    }
-}
 
 fn parse_u32_maybe_hex(s: &str) -> Option<u32> {
     let s = s.trim();
@@ -335,6 +184,36 @@ fn cmd_fire(args: &[String]) -> i32 {
     }
 }
 
+/// Drive a Midea/Danby AC directly from a climate state — generates the code on the fly
+/// (no DB entry needed). e.g. `irapi ac --power on --mode cool --fan high --temp 22`.
+fn cmd_ac(args: &[String]) -> i32 {
+    let power = !matches!(opt(args, "--power"), Some("off") | Some("0") | Some("false"));
+    let mode = midea::mode_from_str(opt(args, "--mode").unwrap_or("cool"));
+    let fan = midea::fan_from_str(opt(args, "--fan").unwrap_or("auto"));
+    let temp: u8 = opt(args, "--temp").and_then(|s| s.parse().ok()).unwrap_or(22);
+    let select: u32 = opt(args, "--select").and_then(parse_u32_maybe_hex).unwrap_or(7);
+    let b = midea::bytes(power, mode, fan, temp);
+    let seq = midea::encode(power, mode, fan, temp);
+    eprintln!(
+        "[ac] power={} mode={} fan={} temp={}C -> {:02X?} ({} intervals)",
+        power, mode, fan, temp, b, seq.len()
+    );
+    if flag(args, "--dry-run") {
+        println!("bytes: {:02X?}", b);
+        return 0;
+    }
+    match i2s::blast(midea::CARRIER, 33, 1, select, &seq, i2s::Finish::Drain) {
+        Ok(()) => {
+            println!("ac: sent power={} mode={} fan={} temp={}C", power, mode, fan, temp);
+            0
+        }
+        Err(e) => {
+            eprintln!("ac error: {}", e);
+            1
+        }
+    }
+}
+
 /// List bundled devices, or the functions of one device (--device <id>).
 fn cmd_codes(args: &[String]) -> i32 {
     match opt(args, "--device") {
@@ -350,6 +229,79 @@ fn cmd_codes(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// LEARN: capture a remote button, decode to mark/space, print it, and (with --device/--function)
+/// save it as a custom device on the overlay so it's browseable/fireable like any DB code.
+fn cmd_learn(args: &[String]) -> i32 {
+    let secs: u64 = opt(args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(15);
+    let ups: f32 = opt(args, "--ups").and_then(|s| s.parse().ok()).unwrap_or(learn::US_PER_SAMPLE);
+    eprintln!("[learn] point a remote at the hub's front and press a button within {}s...", secs);
+    match learn::learn(secs, ups) {
+        Ok(l) => {
+            println!("learned: carrier={}Hz, {} intervals (us/sample={})", l.carrier, l.us.len(), ups);
+            println!(
+                "us: {}",
+                l.us.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",")
+            );
+            if let (Some(dev), Some(func)) = (opt(args, "--device"), opt(args, "--function")) {
+                let dtype = opt(args, "--type").unwrap_or("Custom");
+                let brand = opt(args, "--brand").unwrap_or("Learned");
+                let model = opt(args, "--model").unwrap_or(dev);
+                match db::save_learned(dtype, brand, model, dev, func, l.carrier, &l.us) {
+                    Ok(()) => println!("saved {}/{}", dev, func),
+                    Err(e) => {
+                        eprintln!("save error: {}", e);
+                        return 1;
+                    }
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("learn error: {}", e);
+            1
+        }
+    }
+}
+
+/// IR RECEIVE diagnostic (learn E-1/E-2): capture from /dev/i2s O_RDONLY and dump the run-length
+/// decode so we can confirm RX works + calibrate µs-per-sample against a known remote.
+fn cmd_i2scap(args: &[String]) -> i32 {
+    let secs: u64 = opt(args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(8);
+    let start_kick = flag(args, "--start");
+    eprintln!(
+        "[i2scap] listening on /dev/i2s O_RDONLY up to {}s (start_kick={}) — PRESS A REMOTE at the hub now...",
+        secs, start_kick
+    );
+    match i2s::capture(secs, start_kick) {
+        Ok(buf) if buf.is_empty() => {
+            println!("no activity captured (line stayed idle)");
+            1
+        }
+        Ok(buf) => {
+            let runs = i2s::rle_decode(&buf);
+            println!("captured {} bytes, {} runs", buf.len(), runs.len());
+            let show: Vec<String> = runs
+                .iter()
+                .take(48)
+                .map(|(m, n)| format!("{}{}", if *m { "M" } else { "S" }, n))
+                .collect();
+            println!("runs(samples): {}", show.join(" "));
+            if let Some((_, s0)) = runs.iter().find(|(m, _)| *m) {
+                let s0 = *s0 as f64;
+                println!("leader mark = {:.0} samples", s0);
+                println!("  calibration if leader is 9000us (NEC): us/sample = {:.4}", 9000.0 / s0);
+                println!("  calibration if leader is 4500us       : us/sample = {:.4}", 4500.0 / s0);
+                println!("  leader @1.5us/sample = {:.0}us ; @0.094us/sample = {:.0}us", s0 * 1.5, s0 * 0.094);
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("capture error: {}", e);
+            1
+        }
+    }
 }
 
 /// Blast an arbitrary mark/space timing sequence (one-shot, so it can't wedge) — drives ANY
@@ -498,98 +450,6 @@ fn cmd_regs(_args: &[String]) -> i32 {
     0
 }
 
-/// RE Swiss-army tool: send one or more raw LTCP frames (--frame HEX, repeatable) over a
-/// single connection (0x01 hello unless --no-hello), draining --gap ms after each, and dump
-/// every reply byte. Used to reverse OPEN/DEVCTL/CLOSE choreography live.
-fn cmd_rawsend(args: &[String]) -> i32 {
-    let host = opt(args, "--host").unwrap_or(DEFAULT_HAL);
-    let gap: u64 = opt(args, "--gap").and_then(|s| s.parse().ok()).unwrap_or(600);
-    let hello = !flag(args, "--no-hello");
-    let mut frames: Vec<Vec<u8>> = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--frame" {
-            match args.get(i + 1).map(|h| util::hex_decode(h)) {
-                Some(Ok(b)) => frames.push(b),
-                Some(Err(e)) => {
-                    eprintln!("bad --frame hex: {}", e);
-                    return 2;
-                }
-                None => {}
-            }
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    if frames.is_empty() {
-        eprintln!("rawsend needs at least one --frame HEX");
-        return 2;
-    }
-    let mut be = LtcpBackend::new(host);
-    match be.raw_exchange(&frames, gap, hello) {
-        Ok(replies) => {
-            for (i, r) in replies.iter().enumerate() {
-                let ascii: String = r
-                    .iter()
-                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
-                    .collect();
-                println!("frame{} reply {}b: {}", i, r.len(), util::hex_encode(r));
-                println!("  ascii: {}", ascii);
-            }
-            0
-        }
-        Err(e) => {
-            eprintln!("rawsend error: {}", e);
-            1
-        }
-    }
-}
-
-/// LEARN diagnostic (/ir/ir_cap, Model B): arm a capture and DUMP every byte hal streams
-/// back, so we can reverse the capture-stream framing live. Point a remote at the hub and
-/// press a button within the listen window.
-fn cmd_learn(args: &[String]) -> i32 {
-    let host = opt(args, "--host").unwrap_or(DEFAULT_HAL);
-    let time: u32 = opt(args, "--time").and_then(|s| s.parse().ok()).unwrap_or(5000);
-    let port: u32 = opt(args, "--port").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let listen: u64 = opt(args, "--listen").and_then(|s| s.parse().ok()).unwrap_or(8000);
-    let ports = 1u32 << port;
-    let mut be = LtcpBackend::new(host);
-    eprintln!(
-        "[learn] /ir/ir_cap time={} ports={} — POINT A REMOTE AT THE HUB, press a button within {}ms...",
-        time, ports, listen
-    );
-    match be.ir_cap_probe(time, ports, listen) {
-        Ok(bytes) => {
-            println!("captured {} raw bytes:", bytes.len());
-            println!("{}", util::hex_encode(&bytes));
-            // best-effort ASCII view of any JSON ack that leads the stream
-            let ascii: String = bytes.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
-            println!("ascii: {}", ascii);
-            0
-        }
-        Err(e) => {
-            eprintln!("learn error: {}", e);
-            1
-        }
-    }
-}
-
-fn cmd_health(args: &[String]) -> i32 {
-    let host = opt(args, "--host").unwrap_or(DEFAULT_HAL);
-    let mut be = LtcpBackend::new(host);
-    let h = be.health();
-    println!(
-        "{{\"backend\":\"ltcp\",\"host\":\"{}\",\"connected\":{},\"detail\":\"{}\"}}",
-        host, h.connected, h.detail
-    );
-    if h.connected {
-        0
-    } else {
-        1
-    }
-}
 
 /// DEV-ONLY untethered shell: token-authed single-threaded TCP command server.
 /// The device has no dropbear; this gives networked shell access on the trusted LAN.
@@ -805,22 +665,5 @@ fn cmd_dhcpd(args: &[String]) -> i32 {
 
 fn cmd_serve(args: &[String]) -> i32 {
     let port: u16 = opt(args, "--port").and_then(|s| s.parse().ok()).unwrap_or(80);
-    let hal = opt(args, "--hal").unwrap_or(DEFAULT_HAL).to_string();
-    web::serve(port, &hal)
-}
-
-fn cmd_mock(_args: &[String]) -> i32 {
-    let mut be = MockBackend::new();
-    let code = IrCode {
-        encoding: "ltcp_blob".into(),
-        carrier_hz: 38000,
-        duty: 33,
-        ports: vec![0, 1, 2],
-        repeat: 1,
-        blob: b"HELLO-IR".to_vec(),
-    };
-    let _ = be.send(&code);
-    let h = be.health();
-    println!("mock backend ok: {}", h.detail);
-    0
+    web::serve(port)
 }

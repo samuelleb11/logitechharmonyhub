@@ -1,0 +1,91 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Harmony IR Blaster",
+        "description": "Enter the IP address or hostname of your Harmony IR appliance.",
+        "data": {
+          "host": "Host"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Harmony IR Blaster",
+        "description": "Update the IP address or hostname of your Harmony IR appliance.",
+        "data": {
+          "host": "Host"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the appliance at that address."
+    },
+    "abort": {
+      "already_configured": "This appliance is already configured.",
+      "reconfigure_successful": "Host updated and the integration was reloaded."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Harmony IR",
+        "menu_options": {
+          "add_type": "Add a device from the library",
+          "remove": "Remove a device",
+          "ac": "Air conditioner (Midea/Danby)",
+          "done": "Done"
+        }
+      },
+      "ac": {
+        "title": "Air conditioner",
+        "description": "Expose a Midea/Danby AC as a climate entity (temperature, mode, and fan control).",
+        "data": { "ac": "Enable AC climate entity" }
+      },
+      "add_type": {
+        "title": "Add device — type",
+        "description": "Choose a device category from the on-device library.",
+        "data": { "type": "Type" }
+      },
+      "add_brand": {
+        "title": "Add device — brand",
+        "data": { "brand": "Brand" }
+      },
+      "add_model": {
+        "title": "Add device — model",
+        "description": "Adds this device; a button is created for each of its functions.",
+        "data": { "model": "Model" }
+      },
+      "remove": {
+        "title": "Remove devices",
+        "data": { "remove": "Devices to remove" }
+      }
+    },
+    "abort": {
+      "cannot_connect": "Could not reach the appliance."
+    }
+  },
+  "entity": {
+    "climate": {
+      "air_conditioner": { "name": "Air conditioner" }
+    },
+    "sensor": {
+      "status": { "name": "Status" },
+      "ssid": { "name": "Wi-Fi SSID" },
+      "ip_address": { "name": "IP address" },
+      "firmware": { "name": "Firmware version" },
+      "ir_state": { "name": "IR subsystem" },
+      "last_boot": { "name": "Last boot" }
+    }
+  },
+  "services": {
+    "send_raw": {
+      "name": "Send raw IR",
+      "description": "Blast an arbitrary raw mark/space microsecond sequence.",
+      "fields": {
+        "entity_id": { "name": "Remote", "description": "The Harmony IR remote entity." },
+        "raw_us": { "name": "Raw timing (µs)", "description": "Alternating mark,space,… microseconds, starting with a mark." },
+        "carrier": { "name": "Carrier (Hz)", "description": "IR carrier frequency." },
+        "select": { "name": "Emitter select", "description": "Bitmask of IR outputs (7 = all)." }
+      }
+    }
+  }
+}

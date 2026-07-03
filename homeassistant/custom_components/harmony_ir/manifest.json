@@ -1,0 +1,12 @@
+{
+  "domain": "harmony_ir",
+  "name": "Harmony IR Blaster",
+  "codeowners": ["@samuelleb11"],
+  "config_flow": true,
+  "documentation": "https://github.com/samuelleb11/logitechharmonyhub/tree/main/homeassistant",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/samuelleb11/logitechharmonyhub/issues",
+  "requirements": [],
+  "version": "0.2.0"
+}

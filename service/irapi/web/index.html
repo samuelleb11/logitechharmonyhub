@@ -54,11 +54,33 @@
   </div>
 
   <div class="card">
+    <h2>Air Conditioner <span style="color:var(--mut);font-weight:400;text-transform:none;letter-spacing:0">· Midea/Danby</span></h2>
+    <div class="row"><span class="k">Power</span><span class="v"><button class="sec" id="acPow" onclick="acPow()">On</button></span></div>
+    <select id="acMode"><option value="cool">Cool</option><option value="heat">Heat</option><option value="dry">Dry</option><option value="fan">Fan only</option><option value="auto">Auto</option></select>
+    <select id="acFan"><option value="auto">Fan: Auto</option><option value="low">Fan: Low</option><option value="medium">Fan: Medium</option><option value="high">Fan: High</option></select>
+    <div class="row"><span class="k">Temp</span><span class="v"><span id="acTempV">22</span> °C</span></div>
+    <input id="acTemp" type="range" min="17" max="31" value="22" oninput="$('#acTempV').textContent=this.value" style="padding:0">
+    <div class="btns"><button onclick="acSend()">Apply to AC</button></div>
+    <div class="msg mut" id="acMsg"></div>
+  </div>
+
+  <div class="card">
     <h2>Manual command</h2>
     <input id="rawus" placeholder="raw µs: 9000,4500,560,560,…" autocomplete="off">
     <input id="rawcar" value="38000" placeholder="carrier Hz" autocomplete="off">
     <div class="btns"><button onclick="sendRaw()">Send raw</button></div>
     <div class="msg mut" id="rawMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Learn</h2>
+    <div class="btns"><button class="sec" id="learnBtn" onclick="learn()">Learn a button</button></div>
+    <div class="msg mut" id="learnMsg"></div>
+    <div id="learnSave" style="display:none">
+      <input id="lnModel" placeholder="Device name (e.g. Bedroom TV)" autocomplete="off">
+      <input id="lnFunc" placeholder="Button name (e.g. Power)" autocomplete="off">
+      <div class="btns"><button onclick="learnSave()">Save</button></div>
+    </div>
   </div>
 
   <div class="card">
@@ -72,11 +94,13 @@
   </div>
 
   <div class="card">
-    <h2>IR test</h2>
-    <div class="btns">
-      <button class="sec" onclick="irTest()">Send test blast</button>
-    </div>
-    <div class="msg mut" id="irMsg"></div>
+    <h2>Update (OTA)</h2>
+    <input id="otaToken" placeholder="token" value="harmonydev" autocomplete="off">
+    <div class="row"><span class="k">Firmware</span><input id="otaFw" type="file"></div>
+    <div class="btns"><button onclick="otaFw()">Flash firmware &amp; reboot</button></div>
+    <div class="row"><span class="k">Database</span><input id="otaDbFile" type="file"></div>
+    <div class="btns"><button class="sec" onclick="otaDb()">Update database</button></div>
+    <div class="msg mut" id="otaMsg"></div>
   </div>
 
   <div class="card">
@@ -128,6 +152,33 @@ async function fire(dev,fn){
   const {ok,d}=await api('/api/ir/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({device:dev,function:fn})});
   msg('#remMsg', ok?('sent '+fn+' ✓'):('error: '+((d&&d.error)||'failed')), ok?'ok':'err');
 }
+let learned=null,learnDev=null;
+async function learn(){
+  const b=$('#learnBtn');b.disabled=true;b.textContent='Point a remote & press…';
+  msg('#learnMsg','Waiting ~15s for a button — aim the remote at the hub front and press…','mut');
+  const {ok,d}=await api('/api/ir/learn',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({timeout_ms:15000})});
+  b.disabled=false;b.textContent='Learn a button';
+  if(ok&&d.us&&d.us.length){learned=d;$('#learnSave').style.display='';msg('#learnMsg','Captured '+d.count+' intervals ✓ — name it and Save.','ok')}
+  else{msg('#learnMsg',(d&&d.error)||'no signal captured','err')}
+}
+async function learnSave(){
+  if(!learned)return;
+  const model=$('#lnModel').value.trim()||'Learned device',func=$('#lnFunc').value.trim();
+  if(!func){msg('#learnMsg','enter a button name','err');return}
+  const body={model,function:func,carrier:learned.carrier,us:learned.us};
+  if(learnDev)body.device=learnDev;
+  const {ok,d}=await api('/api/ir/learn/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(ok){learnDev=d.device;$('#lnFunc').value='';msg('#learnMsg','Saved '+func+' ✓ (device '+d.device+') — learn more, or find it under type "Custom" in Remote.','ok');loadTypes()}
+  else{msg('#learnMsg',(d&&d.error)||'save failed','err')}
+}
+let acOn=true;
+function acPow(){acOn=!acOn;$('#acPow').textContent=acOn?'On':'Off';$('#acPow').className=acOn?'sec':'sec';acSend()}
+async function acSend(){
+  const body={power:acOn?'on':'off',mode:$('#acMode').value,fan:$('#acFan').value,temp:parseInt($('#acTemp').value)};
+  msg('#acMsg','Sending…','mut');
+  const {ok,d}=await api('/api/ac/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  msg('#acMsg', ok?('AC set: '+(acOn?body.mode+' '+body.temp+'°C, fan '+body.fan:'off')+' ✓'):('error: '+((d&&d.error)||'failed')), ok?'ok':'err');
+}
 async function sendRaw(){
   const raw=$('#rawus').value.trim().split(',').map(x=>parseInt(x.trim())).filter(x=>x>0);
   const car=parseInt($('#rawcar').value)||38000;
@@ -156,10 +207,25 @@ async function connect(){
   await api('/api/wifi/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ssid,psk})});
   msg('#wifiMsg','Applied. If it joins '+ssid+', find its new IP on that network.','ok');
 }
-async function irTest(){
-  msg('#irMsg','Sending…','mut');
-  const {ok,d}=await api('/api/ir/test',{method:'POST'});
-  msg('#irMsg',(d&&d.detail)||(ok?'sent':'error'),ok?'ok':'err');
+async function otaFw(){
+  const f=$('#otaFw').files[0],tok=$('#otaToken').value.trim();
+  if(!f){msg('#otaMsg','pick a firmware file','err');return}
+  if(!confirm('Flash new firmware and reboot?'))return;
+  msg('#otaMsg','Uploading '+(f.size>>10)+'KB…','mut');
+  try{
+    const r=await fetch('/api/ota?token='+encodeURIComponent(tok),{method:'POST',body:await f.arrayBuffer()});
+    const d=await r.json().catch(()=>({}));
+    msg('#otaMsg', r.ok?('Flashed '+d.bytes+'B ✓ — rebooting, reconnect in ~40s'):('error: '+(d.error||r.status)), r.ok?'ok':'err');
+  }catch(e){msg('#otaMsg','upload done or device rebooting: '+e,'mut')}
+}
+async function otaDb(){
+  const f=$('#otaDbFile').files[0],tok=$('#otaToken').value.trim();
+  if(!f){msg('#otaMsg','pick a database file','err');return}
+  msg('#otaMsg','Uploading DB '+(f.size>>10)+'KB…','mut');
+  const r=await fetch('/api/ota/db?token='+encodeURIComponent(tok),{method:'POST',body:await f.arrayBuffer()});
+  const d=await r.json().catch(()=>({}));
+  msg('#otaMsg', r.ok?('DB updated ✓ — '+d.devices+' devices'):('error: '+(d.error||r.status)), r.ok?'ok':'err');
+  if(r.ok)loadTypes();
 }
 async function reboot(){if(!confirm('Reboot the hub?'))return;msg('#maintMsg','Rebooting…','mut');await api('/api/reboot',{method:'POST'})}
 async function factory(){if(!confirm('Factory reset: erases the saved Wi-Fi network and learned IR codes, then reboots into setup mode (the Harmony-Setup Wi-Fi). Continue?'))return;msg('#maintMsg','Resetting…','mut');await api('/api/factory-reset',{method:'POST'})}

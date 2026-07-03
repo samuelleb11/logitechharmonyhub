@@ -1,1 +1,23 @@
-/.DS_Store
+# ---- OS / editor cruft ----
+.DS_Store
+*.swp
+*~
+
+# ---- Rust build output ----
+target/
+
+# ---- Python bytecode / venvs ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- Build / packing artifacts (rebuilt from source; never commit) ----
+*.upx
+*.stripped
+
+# ---- Local secrets / per-unit material (NEVER commit) ----
+# Wi-Fi credentials and the device SSH private key stay local-only.
+service/ssh/harmony_id_rsa
+service/ssh/wpa_supplicant.conf
+!service/ssh/wpa_supplicant.conf.example

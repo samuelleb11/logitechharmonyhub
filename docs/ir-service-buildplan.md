@@ -1,5 +1,13 @@
 # IR Service — Consolidated Build Plan
 
+> **SUPERSEDED (Route A / hal).** This plan builds `irapi` as an HTTP front end that drives IR
+> through Logitech's stock `/usr/bin/hal` daemon over LTCP (`127.0.0.1:16716`) — "Route A". That
+> approach was **later abandoned**: the shipping `irapi` drives the AR9331 I2S peripheral
+> (`/dev/i2s`) **directly** for both TX and RX, with on-device protocol encoders + a native
+> Midea/Danby AC encoder, and serves the API + web UI on a **single port :80**. There is no `hal`,
+> no LTCP, and no `LtcpBackend`/`MockBackend` in the current code. The §2 LTCP/HBus spec and the
+> Route-A architecture below are kept as **reverse-engineering history**, not the current design.
+
 > **PROGRESS (2026-06-21):** **M0 done** — `service/irapi/` scaffolded: builds to a 580 KB
 > static MSB-MIPS binary, logic host-verified (IrBackend trait, LtcpBackend §2 framing,
 > MockBackend, hand-rolled JSON, `blast`/`learn`/`health`/`mock` CLI with `--dry-run`/`--raw-hex`).
@@ -34,7 +42,7 @@ Rust, static `mips-unknown-linux-musl`, native deploy, overlay-only (no flashing
 
 ```
                     LAN (Wi-Fi: ath0, WPA2-PSK, DHCP)
-                                  │  HTTP/1.1 + JSON  (default 0.0.0.0:8080)
+                                  │  HTTP/1.1 + JSON  (single port, default 0.0.0.0:80)
                                   ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │  irapi  — single OS thread, static mips-musl, ~0.8 MB, on /mnt/data        │
@@ -301,7 +309,7 @@ mtd1–mtd5 from `backups/*.bin` remains available; **never touch mtd0 (u-boot) 
 service/irapi/
   Cargo.toml            # profile cloned from rustprobe: opt-level=z, lto, codegen-units=1,
                         #   panic=abort, strip   (verified: ~547 KB native probe)
-  .cargo/config.toml    # cloned verbatim from service/rustprobe/.cargo/config.toml (rust-lld,
+  .cargo/config.toml    # cloned verbatim from experiments/rustprobe/.cargo/config.toml (rust-lld,
                         #   static, -no-pie, /tmp/mipslibs)
   build-mips.sh         # reuse service/build-mips.sh
   src/
@@ -375,7 +383,7 @@ cap) and the opaque-blob passthrough. `MockBackend` runs the whole stack on the 
   fits the ~4 MB overlay but enforce a configurable `max_db_bytes` (default 1 MB), reject `PUT`
   that would exceed it, surface `db_bytes` in `/api/health`. One canonical encoding per button.
 
-### 4.5 REST API (base `/api`, JSON; default bind `0.0.0.0:8080` to avoid stock `:8088`/`:16716`)
+### 4.5 REST API (base `/api`, JSON; single port, default bind `0.0.0.0:80` — API + web UI together)
 Uniform error envelope `{"ok":false,"error":"…","detail":"…"}`. Home-Assistant-friendly.
 
 ```
@@ -467,7 +475,7 @@ app** (or via M4's `/ir/ir_cap` once that lands), not by reimplementing the code
 ---
 
 ### Key files
-- Build: `service/build-mips.sh`; clone `service/rustprobe/{Cargo.toml,.cargo/config.toml,src/main.rs}`.
+- Build: `service/build-mips.sh`; clone `experiments/rustprobe/{Cargo.toml,.cargo/config.toml,src/main.rs}`.
 - Bring-up: `service/standalone-ir-bringup.sh` (fold into `/mnt/data/irapi/boot/`).
 - Upload: `tools/upload_file.py` + `tools/b64decode.lua` (zip→base64→UART→unzip→md5; **no UPX**).
 - Stock RE sources (extract via `backups/sqextract-atheros-lzma.py backups/mtd3.bin <out>`):

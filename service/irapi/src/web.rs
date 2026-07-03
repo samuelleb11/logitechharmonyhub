@@ -1,7 +1,6 @@
 //! Minimal single-threaded HTTP management server (the web UI). No threads (futex),
 //! no external crates. Serves one self-contained page + a small JSON API.
 
-use crate::ir::LtcpBackend;
 use crate::json::{self, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -72,7 +71,7 @@ fn read_req(stream: &TcpStream) -> Option<Req> {
             clen = v.trim().parse().unwrap_or(0);
         }
     }
-    let clen = clen.min(64 * 1024); // cap body
+    let clen = clen.min(8 * 1024 * 1024); // cap body (OTA uploads the ~800KB binary / ~1.6MB DB)
     let mut body = vec![0u8; clen];
     if clen > 0 && reader.read_exact(&mut body).is_err() {
         return None;
@@ -93,7 +92,7 @@ fn json_resp(s: &mut TcpStream, status: &str, v: &Value) {
     respond(s, status, "application/json", v.to_string().as_bytes());
 }
 
-pub fn serve(port: u16, hal_addr: &str) -> i32 {
+pub fn serve(port: u16) -> i32 {
     let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -110,30 +109,34 @@ pub fn serve(port: u16, hal_addr: &str) -> i32 {
         s.set_read_timeout(Some(std::time::Duration::from_secs(15))).ok();
         s.set_write_timeout(Some(std::time::Duration::from_secs(15))).ok();
         if let Some(req) = read_req(&s) {
-            route(&mut s, &req, hal_addr);
+            route(&mut s, &req);
         }
         // one connection to completion; Connection: close
     }
     0
 }
 
-fn route(s: &mut TcpStream, req: &Req, hal_addr: &str) {
+fn route(s: &mut TcpStream, req: &Req) {
     let (path, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
     match (req.method.as_str(), path) {
         ("GET", "/") | ("GET", "/index.html") => {
             respond(s, "200 OK", "text/html; charset=utf-8", INDEX.as_bytes())
         }
-        ("GET", "/api/status") | ("GET", "/api/health") => api_status(s, hal_addr),
+        ("GET", "/api/status") | ("GET", "/api/health") => api_status(s),
         ("GET", "/api/wifi/scan") => api_scan(s),
         ("GET", "/api/ir/types") => api_ir_types(s),
         ("GET", "/api/ir/brands") => api_ir_brands(s, query),
         ("GET", "/api/ir/devices") => api_ir_devices(s, query),
         ("GET", "/api/ir/functions") => api_ir_functions(s, query),
         ("POST", "/api/ir/send") => api_ir_send(s, &req.body),
+        ("POST", "/api/ac/send") => api_ac_send(s, &req.body),
+        ("POST", "/api/ir/learn") => api_ir_learn(s, &req.body),
+        ("POST", "/api/ir/learn/save") => api_ir_learn_save(s, &req.body),
+        ("POST", "/api/ir/forget") => api_ir_forget(s, &req.body),
         ("GET", "/api/ha/rest_command.yaml") => api_ha_yaml(s),
         ("POST", "/api/wifi/connect") => api_wifi_connect(s, &req.body),
-        ("POST", "/api/ir/test") => api_ir_test(s, hal_addr),
-        ("POST", "/api/ir/loopback") => api_ir_loopback(s, hal_addr),
+        ("POST", "/api/ota") => api_ota(s, query, &req.body),
+        ("POST", "/api/ota/db") => api_ota_db(s, query, &req.body),
         ("POST", "/api/reboot") => {
             json_resp(s, "200 OK", &obj(vec![("ok", Value::Bool(true))]));
             sh("(sleep 1; reboot) &");
@@ -283,6 +286,34 @@ fn api_ir_send(s: &mut TcpStream, body: &[u8]) {
     }
 }
 
+/// POST /api/ac/send — drive a Midea/Danby AC from a climate state, encoded on the fly (no DB
+/// entry needed). Body: {"power":"on|off","mode":"cool|heat|dry|fan|auto","fan":"auto|low|medium|high","temp":22[,"select":7]}.
+fn api_ac_send(s: &mut TcpStream, body: &[u8]) {
+    let v = json::parse(&String::from_utf8_lossy(body)).unwrap_or(Value::Null);
+    let power = !matches!(
+        v.get("power").and_then(|x| x.as_str()),
+        Some("off") | Some("0") | Some("false")
+    );
+    let mode = crate::midea::mode_from_str(v.get("mode").and_then(|x| x.as_str()).unwrap_or("cool"));
+    let fan = crate::midea::fan_from_str(v.get("fan").and_then(|x| x.as_str()).unwrap_or("auto"));
+    let temp = v.get("temp").and_then(|x| x.as_i64()).unwrap_or(22).clamp(17, 31) as u8;
+    let select = v.get("select").and_then(|x| x.as_i64()).unwrap_or(7) as u32;
+    let seq = crate::midea::encode(power, mode, fan, temp);
+    match crate::i2s::blast(crate::midea::CARRIER, 33, 1, select, &seq, crate::i2s::Finish::Drain) {
+        Ok(()) => json_resp(
+            s,
+            "200 OK",
+            &obj(vec![
+                ("ok", Value::Bool(true)),
+                ("power", Value::Bool(power)),
+                ("temp", Value::int(temp as i64)),
+                ("emitted", Value::int(seq.len() as i64)),
+            ]),
+        ),
+        Err(e) => json_err(s, "502 Bad Gateway", &e),
+    }
+}
+
 fn blast_resp(s: &mut TcpStream, carrier: u32, duty: u8, select: u32, seq: &[(bool, u32)]) {
     match crate::i2s::blast(carrier, duty.max(1), 1, select, seq, crate::i2s::Finish::Drain) {
         Ok(()) => json_resp(
@@ -298,7 +329,151 @@ fn json_err(s: &mut TcpStream, status: &str, msg: &str) {
     json_resp(s, status, &obj(vec![("ok", Value::Bool(false)), ("error", Value::str(msg))]));
 }
 
-fn api_status(s: &mut TcpStream, hal_addr: &str) {
+/// Light token for the dangerous OTA endpoints (matches the devshell token). LAN-only appliance.
+const OTA_TOKEN: &str = "harmonydev";
+
+/// POST /api/ota?token=... — replace the running firmware. Body = the new MIPS ELF. Keeps the
+/// previous binary at /root/irapi.prev, swaps via rename (safe while running), then reboots.
+fn api_ota(s: &mut TcpStream, query: &str, body: &[u8]) {
+    if query_get(query, "token").as_deref() != Some(OTA_TOKEN) {
+        return json_err(s, "403 Forbidden", "bad or missing ?token=");
+    }
+    if body.len() < 100_000 || &body[..4] != b"\x7fELF" {
+        return json_err(s, "400 Bad Request", "body is not a firmware ELF (>=100KB, 0x7fELF magic)");
+    }
+    if let Err(e) = std::fs::write("/root/irapi.staged", body) {
+        return json_err(s, "500 Internal Server Error", &format!("write staged: {}", e));
+    }
+    sh("chmod +x /root/irapi.staged; cp -f /root/irapi /root/irapi.prev 2>/dev/null");
+    if let Err(e) = std::fs::rename("/root/irapi.staged", "/root/irapi") {
+        return json_err(s, "500 Internal Server Error", &format!("swap: {}", e));
+    }
+    json_resp(
+        s,
+        "200 OK",
+        &obj(vec![
+            ("ok", Value::Bool(true)),
+            ("bytes", Value::int(body.len() as i64)),
+            ("detail", Value::str("firmware flashed; rebooting (prev kept at /root/irapi.prev)")),
+        ]),
+    );
+    sh("(sleep 1; reboot) &");
+}
+
+/// POST /api/ota/db?token=... — replace the code database (/cache/irdb.txt). Hot-reloaded, no reboot.
+fn api_ota_db(s: &mut TcpStream, query: &str, body: &[u8]) {
+    if query_get(query, "token").as_deref() != Some(OTA_TOKEN) {
+        return json_err(s, "403 Forbidden", "bad or missing ?token=");
+    }
+    if body.len() < 20 || !body.starts_with(b"D\t") {
+        return json_err(s, "400 Bad Request", "body doesn't look like an irdb.txt (starts with 'D\\t')");
+    }
+    if let Err(e) = std::fs::write("/cache/irdb.txt.staged", body) {
+        return json_err(s, "500 Internal Server Error", &format!("write: {}", e));
+    }
+    if let Err(e) = std::fs::rename("/cache/irdb.txt.staged", "/cache/irdb.txt") {
+        return json_err(s, "500 Internal Server Error", &format!("swap: {}", e));
+    }
+    crate::db::reload();
+    json_resp(
+        s,
+        "200 OK",
+        &obj(vec![
+            ("ok", Value::Bool(true)),
+            ("bytes", Value::int(body.len() as i64)),
+            ("devices", Value::int(crate::db::device_count() as i64)),
+        ]),
+    );
+}
+
+/// POST /api/ir/learn {timeout_ms} — capture a remote button and return the decoded code.
+/// Blocks the (single-threaded) server until a button is pressed or the timeout elapses.
+fn api_ir_learn(s: &mut TcpStream, body: &[u8]) {
+    let v = json::parse(&String::from_utf8_lossy(body)).unwrap_or(Value::Null);
+    let secs = (v.get("timeout_ms").and_then(|x| x.as_i64()).unwrap_or(15000) / 1000).max(2) as u64;
+    // best-effort: ensure the cc2544 IR front-end firmware is loaded
+    let _ = sh("[ -c /dev/rffw ] && cat /lib/firmware/cc2544.bin > /dev/rffw 2>/dev/null");
+    match crate::learn::learn(secs, crate::learn::US_PER_SAMPLE) {
+        Ok(l) => json_resp(
+            s,
+            "200 OK",
+            &obj(vec![
+                ("ok", Value::Bool(true)),
+                ("carrier", Value::int(l.carrier as i64)),
+                ("count", Value::int(l.us.len() as i64)),
+                ("us", Value::Arr(l.us.iter().map(|&u| Value::int(u as i64)).collect())),
+            ]),
+        ),
+        Err(e) => json_err(s, "504 Gateway Timeout", &e),
+    }
+}
+
+/// POST /api/ir/learn/save {model,function,carrier,us[,type,brand,device]} — persist a learned
+/// code as a custom device (browseable/fireable like any other). Returns the device id.
+fn api_ir_learn_save(s: &mut TcpStream, body: &[u8]) {
+    let v = json::parse(&String::from_utf8_lossy(body)).unwrap_or(Value::Null);
+    let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let dtype = {
+        let t = g("type");
+        if t.is_empty() { "Custom".to_string() } else { t }
+    };
+    let brand = {
+        let b = g("brand");
+        if b.is_empty() { "Learned".to_string() } else { b }
+    };
+    let function = g("function");
+    let carrier = v.get("carrier").and_then(|x| x.as_i64()).unwrap_or(38000) as u32;
+    let us: Vec<u32> = v
+        .get("us")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64().map(|n| n.max(0) as u32)).collect())
+        .unwrap_or_default();
+    if function.is_empty() || us.is_empty() {
+        return json_err(s, "400 Bad Request", "need function + us");
+    }
+    let device = {
+        let d = g("device");
+        if d.is_empty() { crate::db::next_custom_id() } else { d }
+    };
+    let model = {
+        let m = g("model");
+        if m.is_empty() { device.clone() } else { m }
+    };
+    match crate::db::save_learned(&dtype, &brand, &model, &device, &function, carrier, &us) {
+        Ok(()) => json_resp(
+            s,
+            "200 OK",
+            &obj(vec![
+                ("ok", Value::Bool(true)),
+                ("device", Value::str(device)),
+                ("function", Value::str(function)),
+            ]),
+        ),
+        Err(e) => json_err(s, "500 Internal Server Error", &e),
+    }
+}
+
+/// POST /api/ir/forget {device[,function]} — delete a learned code (or the whole learned device
+/// if `function` is omitted). Backs Home Assistant's remote.delete_command. Bundled DB is read-only.
+fn api_ir_forget(s: &mut TcpStream, body: &[u8]) {
+    let v = json::parse(&String::from_utf8_lossy(body)).unwrap_or(Value::Null);
+    let device = v.get("device").and_then(|x| x.as_str()).unwrap_or("");
+    let function = v.get("function").and_then(|x| x.as_str()).unwrap_or("");
+    if device.is_empty() {
+        return json_err(s, "400 Bad Request", "need device");
+    }
+    match crate::db::forget_learned(device, function) {
+        Ok(true) => json_resp(
+            s,
+            "200 OK",
+            &obj(vec![("ok", Value::Bool(true)), ("removed", Value::Bool(true))]),
+        ),
+        Ok(false) => json_err(s, "404 Not Found", "no matching learned device/function"),
+        Err(e) => json_err(s, "500 Internal Server Error", &e),
+    }
+}
+
+fn api_status(s: &mut TcpStream) {
     let iwc0 = sh("iwconfig ath0 2>/dev/null");
     let iwc1 = sh("iwconfig ath1 2>/dev/null");
     let sta_ssid = between(&iwc0, "ESSID:\"", "\"").unwrap_or("").to_string();
@@ -319,7 +494,6 @@ fn api_status(s: &mut TcpStream, hal_addr: &str) {
         "no /dev/i2s"
     };
     let uptime = sh("cut -d. -f1 /proc/uptime").trim().to_string();
-    let _ = hal_addr;
     json_resp(
         s,
         "200 OK",
@@ -400,47 +574,4 @@ fn api_wifi_connect(s: &mut TcpStream, body: &[u8]) {
     );
     // Reboot to apply (rcS.local connects with the new config on boot — simplest & reliable).
     sh("(sleep 2; reboot) &");
-}
-
-fn api_ir_test(s: &mut TcpStream, hal_addr: &str) {
-    // Fire hal's built-in 40 kHz IR test waveform (/ir/ir_test — no learned code needed)
-    // and report hal's response code. This PHYSICALLY emits IR: point a phone camera at the
-    // front IR window to see it flicker.
-    let mut be = LtcpBackend::new(hal_addr);
-    match be.ir_test(1000, 7) {
-        Ok(r) => json_resp(
-            s,
-            "200 OK",
-            &obj(vec![
-                ("ok", Value::Bool(r.ok())),
-                ("detail", Value::str(format!("ir_test {}", r.detail()))),
-            ]),
-        ),
-        Err(e) => json_resp(
-            s,
-            "502 Bad Gateway",
-            &obj(vec![("ok", Value::Bool(false)), ("detail", Value::str(format!("hal: {}", e)))]),
-        ),
-    }
-}
-
-fn api_ir_loopback(s: &mut TcpStream, hal_addr: &str) {
-    // Closed-loop RF self-test: hal emits + receives its own pattern and validates the
-    // carrier. No camera needed. Report hal's response verbatim.
-    let mut be = LtcpBackend::new(hal_addr);
-    match be.ir_loopback() {
-        Ok(r) => json_resp(
-            s,
-            "200 OK",
-            &obj(vec![
-                ("ok", Value::Bool(r.ok())),
-                ("detail", Value::str(format!("loopback {}", r.detail()))),
-            ]),
-        ),
-        Err(e) => json_resp(
-            s,
-            "502 Bad Gateway",
-            &obj(vec![("ok", Value::Bool(false)), ("detail", Value::str(format!("hal: {}", e)))]),
-        ),
-    }
 }

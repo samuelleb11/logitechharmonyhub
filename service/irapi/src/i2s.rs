@@ -11,7 +11,7 @@
 //! the char-device path here. Single-threaded, std + one libc `ioctl` extern (static musl).
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 
 #[allow(non_camel_case_types)]
@@ -46,6 +46,97 @@ fn spp(period_ns: u32) -> u32 {
     } else {
         2
     }
+}
+
+pub const I2S_FREQ_CAP: u32 = 0x0025_8000; // nominal ~666kHz sample clock (1.5µs/sample before the ~16x)
+
+/// IR RECEIVE (learn): oversample the IR-receiver line via /dev/i2s in O_RDONLY. Waits up to
+/// `max_secs` for activity (a non-idle chunk), then captures ~300ms more and returns the raw
+/// 1-bit-per-sample byte buffer (MSB-first, idle-level = constant 0x00/0xFF bytes). Empty vec =
+/// no activity seen. `start_kick` optionally issues I2S_START before reading (RX DMA kick).
+pub fn capture(max_secs: u64, start_kick: bool) -> Result<Vec<u8>, String> {
+    use std::time::{Duration, Instant};
+    let mut f = OpenOptions::new()
+        .read(true) // O_RDONLY -> RX ring (NOT the TX ring)
+        .open("/dev/i2s")
+        .map_err(|e| format!("open /dev/i2s O_RDONLY: {} (hal or a TX blast holding it?)", e))?;
+    let fd = f.as_raw_fd();
+    unsafe {
+        ioc(fd, I2S_DSIZE, 16)?;
+        ioc(fd, I2S_MODE, 2)?;
+        ioc(fd, I2S_VOLUME, 15)?;
+        ioc(fd, I2S_FREQ, I2S_FREQ_CAP as c_int)?;
+        if start_kick {
+            let _ = ioc(fd, I2S_START, 0); // best-effort RX kick
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(max_secs);
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut active_at: Option<Instant> = None;
+    let mut chunk = [0u8; 192];
+    loop {
+        let n = match f.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => return Err(format!("i2s read: {}", e)),
+        };
+        let has_activity = chunk[..n].iter().any(|&b| b != 0x00 && b != 0xFF);
+        match active_at {
+            None => {
+                if has_activity {
+                    active_at = Some(Instant::now());
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                // else: idle, keep waiting (discard)
+            }
+            Some(t0) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if Instant::now() >= t0 + Duration::from_millis(300) {
+                    break;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        if buf.len() > 512 * 1024 {
+            break;
+        }
+    }
+    Ok(buf)
+}
+
+/// Run-length decode a raw capture buffer into (is_mark, sample_count) runs. Inverts each byte
+/// (hal does `~b` so idle-high reads as 0, mark as 1), MSB-first, skips leading idle.
+pub fn rle_decode(raw: &[u8]) -> Vec<(bool, u32)> {
+    let mut runs: Vec<(bool, u32)> = Vec::new();
+    let (mut cur, mut n, mut started) = (false, 0u32, false);
+    for &byte in raw {
+        let b = !byte;
+        for k in (0..8).rev() {
+            let bit = (b >> k) & 1 == 1;
+            if !started {
+                if !bit {
+                    continue;
+                }
+                started = true;
+                cur = true;
+                n = 1;
+                continue;
+            }
+            if bit == cur {
+                n += 1;
+            } else {
+                runs.push((cur, n));
+                cur = bit;
+                n = 1;
+            }
+        }
+    }
+    if started && n > 0 {
+        runs.push((cur, n));
+    }
+    runs
 }
 
 /// Render a mark/space timing sequence into `(stereo_clk divider, I2S sample bytes)` for a

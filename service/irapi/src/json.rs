@@ -36,13 +36,6 @@ impl Value {
     pub fn as_i64(&self) -> Option<i64> {
         self.as_f64().map(|n| n as i64)
     }
-    pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self {
-            Some(*b)
-        } else {
-            None
-        }
-    }
     pub fn as_array(&self) -> Option<&Vec<Value>> {
         if let Value::Arr(a) = self {
             Some(a)

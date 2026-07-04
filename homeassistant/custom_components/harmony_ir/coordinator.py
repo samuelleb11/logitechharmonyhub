@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import ApiClient, ApiError
-from .const import DOMAIN
+from .const import DOMAIN, RF_POLL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class HarmonyCoordinator(DataUpdateCoordinator[HarmonyData]):
             update_interval=timedelta(seconds=30),
         )
         self.client = client  # platforms reach the appliance API via coordinator.client
+        self.rf: HarmonyRfCoordinator | None = None  # set in async_setup_entry (remote-button feed)
 
     async def _async_update_data(self) -> HarmonyData:
         try:
@@ -59,3 +60,32 @@ def hub_device_info(coordinator: HarmonyCoordinator) -> DeviceInfo:
         sw_version=(coordinator.data or {}).get("version"),
         configuration_url=f"http://{entry.data[CONF_HOST]}",
     )
+
+
+class HarmonyRfCoordinator(DataUpdateCoordinator[HarmonyData]):
+    """Poll GET /api/rf/recent frequently for near-instant remote-button triggers.
+
+    Best-effort: a failed poll (hub blip, or older firmware without /api/rf/recent) yields the last
+    payload instead of failing, so the remote-button event entity never flaps and the rest of the
+    integration is unaffected.
+    """
+
+    config_entry: HarmonyConfigEntry
+
+    def __init__(
+        self, hass: HomeAssistant, config_entry: HarmonyConfigEntry, client: ApiClient
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=config_entry,
+            name=f"{DOMAIN}_rf",
+            update_interval=timedelta(seconds=RF_POLL_SECONDS),
+        )
+        self.client = client
+
+    async def _async_update_data(self) -> HarmonyData:
+        try:
+            return await self.client.rf_recent()
+        except ApiError:
+            return self.data or {}  # keep last; don't flap on a transient blip / missing endpoint

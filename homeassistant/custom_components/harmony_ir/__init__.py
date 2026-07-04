@@ -20,13 +20,14 @@ from .const import (
     DOMAIN,
     SERVICE_SEND_RAW,
 )
-from .coordinator import HarmonyConfigEntry, HarmonyCoordinator
+from .coordinator import HarmonyConfigEntry, HarmonyCoordinator, HarmonyRfCoordinator
 
 PLATFORMS: list[Platform] = [
     Platform.REMOTE,
     Platform.BUTTON,
     Platform.CLIMATE,
     Platform.SENSOR,
+    Platform.EVENT,
 ]
 
 SEND_RAW_SCHEMA = vol.Schema(
@@ -71,6 +72,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HarmonyConfigEntry) -> b
     client = ApiClient(async_get_clientsession(hass), entry.data[CONF_HOST])
     coordinator = HarmonyCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()  # raises ConfigEntryNotReady if down
+    # Fast, best-effort poll of the paired-remote button feed (drives the `event` entity). Attached
+    # to the main coordinator so platforms reach it via entry.runtime_data.rf. Its first refresh is
+    # tolerant (older firmware without /api/rf/recent just yields no button events).
+    rf_coordinator = HarmonyRfCoordinator(hass, entry, client)
+    await rf_coordinator.async_config_entry_first_refresh()
+    coordinator.rf = rf_coordinator
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))

@@ -11,6 +11,7 @@ mod json;
 mod learn;
 mod mem;
 mod midea;
+mod rf;
 mod web;
 
 fn main() {
@@ -26,6 +27,7 @@ fn run(args: &[String]) -> i32 {
         "fire" => cmd_fire(rest),
         "ac" => cmd_ac(rest),
         "learn" => cmd_learn(rest),
+        "rf" => cmd_rf(rest),
         "codes" => cmd_codes(rest),
         "i2stest" => cmd_i2stest(rest),
         "i2sraw" => cmd_i2sraw(rest),
@@ -94,6 +96,10 @@ fn opt<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 
 fn flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
+}
+
+fn hexdump(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join(" ")
 }
 
 
@@ -212,6 +218,332 @@ fn cmd_ac(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+    let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if clean.len() % 2 != 0 {
+        return Err("odd number of hex digits".into());
+    }
+    (0..clean.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// Harmony REMOTE over the 2.4GHz RF link (cc2544 radio via /dev/rfspi).
+///   irapi rf fw                     # (re)load cc2544 firmware into the chip
+///   irapi rf sniff [--secs 30] [--cmd HEX] [--no-init]   # send INIT, dump every RF frame
+///   irapi rf pair  [--secs 90] [--cmd HEX]               # INIT + open pairing window; hold Menu+Mute
+///   irapi rf listen [--secs N] [--select N] [--no-init]  # INIT, decode buttons -> fire mapped IR
+///   irapi rf map  --button NAME --device ID --function FN # bind a button to an IR code
+///   irapi rf send  --cmd HEX        # send one raw command, print any reply
+/// INIT (10 ff 80 00 00 01 00) and the pair window (10 ff 80 b2 01 00 <secs>) are verified from
+/// stock hal. Run detached when capturing over the devshell (a blocking rfspi op can wedge the
+/// process): `nohup irapi rf sniff --secs 60 > /cache/rfcap.log 2>&1 &` then pull the log.
+fn cmd_rf(args: &[String]) -> i32 {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("sniff");
+    match sub {
+        "fw" => match rf::load_fw() {
+            Ok(()) => {
+                println!("cc2544 firmware loaded");
+                0
+            }
+            Err(e) => {
+                eprintln!("rf fw: {}", e);
+                1
+            }
+        },
+        "send" => cmd_rf_send(args),
+        "pair" => cmd_rf_sniff(args, true),
+        "sniff" => cmd_rf_sniff(args, false),
+        "listen" => cmd_rf_listen(args),
+        "map" => cmd_rf_map(args),
+        _ => {
+            eprintln!("rf subcommands: sniff | pair | listen | map | send | fw");
+            2
+        }
+    }
+}
+
+fn cmd_rf_send(args: &[String]) -> i32 {
+    let hex = match opt(args, "--cmd") {
+        Some(h) => h,
+        None => {
+            eprintln!("rf send needs --cmd HEX (e.g. --cmd 12ff)");
+            return 2;
+        }
+    };
+    let cmd = match parse_hex(hex) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("bad --cmd: {}", e);
+            return 2;
+        }
+    };
+    // cc2544 fw is loaded at boot by rcS.local
+    let mut f = match rf::open_rf() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    if let Err(e) = rf::send(&mut f, &cmd) {
+        eprintln!("{}", e);
+        return 1;
+    }
+    eprintln!("[rf] sent {} bytes ({}); waiting up to 2s for a reply…", cmd.len(), hexdump(&cmd));
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    // reads block, so arm a 2s SIGALRM backstop (terminates the process if no reply arrives).
+    rf::arm_timeout(2);
+    match rf::recv_blocking(&f) {
+        Ok(pkt) => println!("reply {}", rf::describe(&pkt)),
+        Err(e) => eprintln!("{}", e),
+    }
+    0
+}
+
+fn cmd_rf_sniff(args: &[String], pair: bool) -> i32 {
+    let secs: u64 = opt(args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(30);
+    // (rcS.local loads the cc2544 firmware at boot; use `irapi rf fw` to reload explicitly.)
+    let mut f = match rf::open_rf() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    // Bring the radio up with hal's exact INIT command (verified: 10 ff 80 00 00 01 00), unless
+    // the operator opts out with --no-init. This is what makes the radio start delivering frames.
+    if !flag(args, "--no-init") {
+        if let Err(e) = rf::start(&mut f) {
+            eprintln!("[rf] init: {}", e);
+        } else {
+            eprintln!("[rf] sent INIT ({})", hexdump(&rf::INIT));
+        }
+    }
+    if pair {
+        // Open the pairing/discovery window (verified: 10 ff 80 b2 01 00 <secs>). byte6 is a u8, so
+        // clamp; the user then holds Menu+Mute so the remote joins during the window.
+        let window = secs.min(120) as u8;
+        let cmd = rf::pair_open(window);
+        if let Err(e) = rf::send(&mut f, &cmd) {
+            eprintln!("[rf] pair_open: {}", e);
+        }
+        eprintln!("[rf] PAIRING window OPEN for {}s ({}) — now HOLD **Menu + Mute** on the remote…",
+            window, hexdump(&cmd));
+    }
+    // Optional extra command (e.g. try 0x12 reporting-enable by hand): sent after INIT/pair_open.
+    if let Some(hex) = opt(args, "--cmd") {
+        match parse_hex(hex) {
+            Ok(b) => {
+                if let Err(e) = rf::send(&mut f, &b) {
+                    eprintln!("[rf] send: {}", e);
+                } else {
+                    eprintln!("[rf] sent --cmd ({})", hexdump(&b));
+                }
+            }
+            Err(e) => {
+                eprintln!("bad --cmd: {}", e);
+                return 2;
+            }
+        }
+    }
+    // Reads BLOCK (the driver has no non-blocking read / poll), so bound the capture with a SIGALRM
+    // backstop and flush each line — a detached process is stopped precisely by `kill`. The radio
+    // auto-closes the pairing window after the `secs` byte, so no explicit PAIR_CLOSE is needed.
+    eprintln!("[rf] listening on {} (blocking reads; SIGALRM backstop {}s)…", rf::RFSPI, secs);
+    rf::arm_timeout(secs as u32);
+    loop {
+        match rf::recv_blocking(&f) {
+            Ok(pkt) => {
+                println!("{}", rf::describe(&pkt));
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            Err(e) => {
+                eprintln!("[rf] {}", e);
+                break;
+            }
+        }
+    }
+    0
+}
+
+/// Assign a remote button (in a profile) to a short/long action:
+///   irapi rf map --button vol_up --type ir --device X --function Y   # fire an IR code
+///   irapi rf map --button menu   --type ha                           # surface to Home Assistant
+///   irapi rf map --button off --type profile --target ac             # switch to the "ac" profile
+///   irapi rf map --button play --press long --type ha                # long-press action
+///   irapi rf map --button menu   --type none                         # clear (this press)
+/// Defaults: --profile <active>, --press short.
+fn cmd_rf_map(args: &[String]) -> i32 {
+    let btn = match opt(args, "--button") {
+        Some(b) => b,
+        None => {
+            eprintln!("rf map needs --button NAME [--profile P] [--press short|long] [--type ir|ha|profile|none] ...");
+            eprintln!("button names: {}", rf::BUTTONS.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(", "));
+            return 2;
+        }
+    };
+    let profile = opt(args, "--profile").map(String::from).unwrap_or_else(rf::active_profile);
+    let press = opt(args, "--press").unwrap_or("short");
+    let kind = opt(args, "--type").unwrap_or("ir");
+    let dev = opt(args, "--device").unwrap_or("");
+    let func = opt(args, "--function").unwrap_or("");
+    let target = opt(args, "--target").unwrap_or("");
+    if kind == "ir" && (dev.is_empty() || func.is_empty()) {
+        eprintln!("rf map --type ir needs --device and --function");
+        return 2;
+    }
+    if kind == "profile" && target.is_empty() {
+        eprintln!("rf map --type profile needs --target PROFILE");
+        return 2;
+    }
+    if kind == "ir" && db::lookup(dev, func).is_none() {
+        eprintln!("warning: {}/{} not found in the IR DB (mapping saved anyway)", dev, func);
+    }
+    let action = rf::Action {
+        kind: kind.to_string(),
+        device: dev.to_string(),
+        function: func.to_string(),
+        profile: target.to_string(),
+    };
+    match rf::save_action(&profile, btn, press, &action) {
+        Ok(()) => {
+            println!("mapped {}/{} [{}] -> {}", profile, btn, press, kind);
+            0
+        }
+        Err(e) => {
+            eprintln!("rf map: {}", e);
+            1
+        }
+    }
+}
+
+/// Execute a button's mapped action for the ACTIVE profile and record the press (for the web UI
+/// live feed + Home Assistant). `long`=long-press. "ir" fires locally via I2S; "profile" switches
+/// the active profile; "ha"/"none" are recorded only (HA polls /api/rf/recent).
+fn rf_fire(name: &str, code: u32, long: bool, select: u32, seq: &mut u64) {
+    let profile = rf::active_profile(); // capture before a "profile" action can change it
+    // Use the long action for a long press; if none is mapped, fall back to the short action (a long
+    // press is still a press). `long` still reflects the PHYSICAL press so the UI/HA/log can show it.
+    let act = rf::button_action(name, long).or_else(|| if long { rf::button_action(name, false) } else { None });
+    let status = match act.as_ref().map(|a| a.kind.as_str()) {
+        Some("ir") => {
+            let a = act.as_ref().unwrap();
+            match db::lookup(&a.device, &a.function) {
+                Some(r) => {
+                    if i2s::blast(r.carrier, r.duty.max(1), 1, select, &r.seq(), i2s::Finish::Drain).is_ok() {
+                        "ir".to_string()
+                    } else {
+                        "ir-error".to_string()
+                    }
+                }
+                None => "ir-notindb".to_string(),
+            }
+        }
+        Some("ha") => "ha".to_string(),
+        Some("profile") => {
+            let a = act.as_ref().unwrap();
+            let _ = rf::set_active(&a.profile);
+            format!("profile:{}", a.profile)
+        }
+        _ => "none".to_string(),
+    };
+    *seq += 1;
+    rf::record_press(*seq, name, code, &status, long, &profile);
+    println!("{} {} [{}] (0x{:08x})", name, if long { "long" } else { "short" }, status, code);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
+/// The remote→IR daemon: read button presses, look them up in remotemap.json, fire the IR code.
+fn cmd_rf_listen(args: &[String]) -> i32 {
+    let select: u32 = opt(args, "--select").and_then(parse_u32_maybe_hex).unwrap_or(7);
+    let secs: Option<u64> = opt(args, "--secs").and_then(|s| s.parse().ok());
+    // cc2544 fw is loaded at boot by rcS.local
+    let mut f = match rf::open_rf() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    rf::write_pid(); // so /api/rf/pair can stop us to open a pairing window
+    // Bring the radio up (INIT) so button reports flow, unless the operator opts out.
+    if !flag(args, "--no-init") {
+        if let Err(e) = rf::start(&mut f) {
+            eprintln!("[rf] init: {}", e);
+        }
+    }
+    // If the web UI requested pairing (POST /api/rf/pair drops a flag + restarts us), open the
+    // pairing window now — this process owns /dev/rfspi, so pairing goes through it.
+    if rf::take_pair_request() {
+        let _ = rf::send(&mut f, &rf::pair_open(90));
+        eprintln!("[rf] pairing window OPEN 90s — hold Menu+Mute on the remote");
+    }
+    eprintln!(
+        "[rf] listen: {} mapping(s) in profile '{}'; select={}",
+        rf::active_mapping_count(), rf::active_profile(), select
+    );
+    // Reads block; an optional --secs arms a SIGALRM backstop, otherwise this daemon blocks forever
+    // waiting for presses (the correct behaviour — one press wakes the read, we act + record it).
+    if let Some(s) = secs {
+        rf::arm_timeout(s as u32);
+    }
+    let mut seq = rf::last_seq();
+    // ACTIVITY-WINDOW press classifier. A single physical press is a burst of 0x20 report frames —
+    // and while a button is HELD the remote keeps cycling press/key-up frames — so we treat a press
+    // as one "activity window": it opens on the first report frame and stays open while report OR
+    // key-up frames for that button keep arriving (gap < GAP_MS). Between/after presses the remote
+    // sends status beacons (~6/s) which act as a clock to close (settle) the window. The window's
+    // total span decides short vs long, and we fire EXACTLY ONCE when it closes. This is robust to
+    // the frame bursts (no double-fire) and detects a real hold (no per-cycle reset).
+    const GAP_MS: u128 = 320; // no report/key-up frame for this long ⇒ the press ended
+    const LONG_MS: u128 = 550; // total active hold ≥ this ⇒ long press
+    let mut cur = String::new(); // button of the open window ("" = none open)
+    let mut cur_code = 0u32;
+    let mut down = std::time::Instant::now(); // window open time
+    let mut last_active = std::time::Instant::now(); // last report/key-up frame for this window
+    let mut open = false;
+    loop {
+        match rf::recv_blocking(&f) {
+            Ok(pkt) => {
+                let now = std::time::Instant::now();
+                // Close an open window that has gone quiet (uses beacons/any frame as the clock).
+                if open && now.duration_since(last_active).as_millis() > GAP_MS {
+                    let long = last_active.duration_since(down).as_millis() >= LONG_MS;
+                    rf_fire(&cur, cur_code, long, select, &mut seq);
+                    open = false;
+                }
+                if let Some((code, name)) = rf::decode_button(&pkt) {
+                    if !open || name != cur {
+                        // a new press begins — settle any still-open window for a different button
+                        if open {
+                            let long = last_active.duration_since(down).as_millis() >= LONG_MS;
+                            rf_fire(&cur, cur_code, long, select, &mut seq);
+                        }
+                        cur = name.to_string();
+                        cur_code = code;
+                        down = now;
+                        open = true;
+                    }
+                    last_active = now;
+                } else if rf::is_release(&pkt) {
+                    // key-up mid-hold keeps the window alive (the remote cycles while held)
+                    if open {
+                        last_active = now;
+                    }
+                }
+                // other frames (status beacons) only serve as the settle clock, above.
+            }
+            Err(e) => {
+                eprintln!("[rf] {}", e);
+                break;
+            }
+        }
+    }
+    0
 }
 
 /// List bundled devices, or the functions of one device (--device <id>).

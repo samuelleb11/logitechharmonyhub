@@ -13,6 +13,10 @@ learns IR straight from `/dev/i2s`, no Logitech cloud) from Home Assistant — f
 - **Buttons** — add any library device in the options UI and get one button per function.
 - **Climate** — optional Midea/Danby **AC thermostat** (temperature, mode, fan), encoded on the
   appliance. Enable it under the integration's options.
+- **Remote button event** — pair a **Logitech Harmony 2.4 GHz remote** to the hub (Remote tab of the
+  appliance web UI) and every button press becomes a Home Assistant trigger via a `event` entity
+  (`event.harmony_ir_blaster_remote_button`, `event_types` = the button names) — harness the physical
+  remote for *any* HA automation, not just IR.
 - **Diagnostic sensors** — hub status, Wi-Fi SSID, IP, firmware version, IR subsystem, and last
   boot, grouped under the hub device.
 - **Availability** — every entity greys out when the appliance is unreachable (30 s status poll).
@@ -85,7 +89,28 @@ data:
   carrier: 38000
 ```
 
+Harness a **physical remote button** (any HA action — not just IR). First pair the remote in the
+appliance's web UI (Remote tab → Pair). Then trigger on the `event` entity:
+```yaml
+automation:
+  trigger:
+    - platform: state
+      entity_id: event.harmony_ir_blaster_remote_button
+      attribute: event_type
+      to: "menu"          # the button name
+  action:
+    - service: light.toggle
+      target: { entity_id: light.living_room }
+```
+Or trigger on the bus event (any button; branch on `trigger.event.data.button`):
+```yaml
+  trigger:
+    - platform: event
+      event_type: harmony_ir_button
+```
+
 ## Appliance API used
 `GET /api/status`; `GET /api/ir/{types,brands,devices,functions}`; `POST /api/ir/send`
 (`{device,function[,select]}` or `{raw_us,carrier[,select]}`); `POST /api/ac/send`;
-`POST /api/ir/{learn,learn/save,forget}`. See the main project docs.
+`POST /api/ir/{learn,learn/save,forget}`; `GET /api/rf/recent` (remote-button feed, 1 s poll). See
+the main project docs.

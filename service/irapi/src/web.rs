@@ -7,6 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 const INDEX: &str = include_str!("../web/index.html");
+const REMOTE_IMG: &[u8] = include_bytes!("../web/assets/smart-control_remote.jpg");
 
 fn sh(cmd: &str) -> String {
     match Command::new("/bin/sh").arg("-c").arg(cmd).output() {
@@ -122,6 +123,9 @@ fn route(s: &mut TcpStream, req: &Req) {
         ("GET", "/") | ("GET", "/index.html") => {
             respond(s, "200 OK", "text/html; charset=utf-8", INDEX.as_bytes())
         }
+        ("GET", "/assets/smart-control_remote.jpg") => {
+            respond(s, "200 OK", "image/jpeg", REMOTE_IMG)
+        }
         ("GET", "/api/status") | ("GET", "/api/health") => api_status(s),
         ("GET", "/api/wifi/scan") => api_scan(s),
         ("GET", "/api/ir/types") => api_ir_types(s),
@@ -134,6 +138,13 @@ fn route(s: &mut TcpStream, req: &Req) {
         ("POST", "/api/ir/learn/save") => api_ir_learn_save(s, &req.body),
         ("POST", "/api/ir/forget") => api_ir_forget(s, &req.body),
         ("GET", "/api/ha/rest_command.yaml") => api_ha_yaml(s),
+        ("GET", "/api/rf/status") => api_rf_status(s),
+        ("GET", "/api/rf/recent") => api_rf_recent(s),
+        ("POST", "/api/rf/pair") => api_rf_pair(s),
+        ("GET", "/api/rf/map") => api_rf_map_get(s),
+        ("POST", "/api/rf/map") => api_rf_map_post(s, &req.body),
+        ("GET", "/api/rf/profiles") => api_rf_profiles_get(s),
+        ("POST", "/api/rf/profiles") => api_rf_profiles_post(s, &req.body),
         ("POST", "/api/wifi/connect") => api_wifi_connect(s, &req.body),
         ("POST", "/api/ota") => api_ota(s, query, &req.body),
         ("POST", "/api/ota/db") => api_ota_db(s, query, &req.body),
@@ -470,6 +481,148 @@ fn api_ir_forget(s: &mut TcpStream, body: &[u8]) {
         ),
         Ok(false) => json_err(s, "404 Not Found", "no matching learned device/function"),
         Err(e) => json_err(s, "500 Internal Server Error", &e),
+    }
+}
+
+// --- Harmony RF remote endpoints (the `rf listen` daemon owns /dev/rfspi; we talk via /cache) ----
+
+/// GET /api/rf/status — is the listener running, is a remote paired, and the last press.
+fn api_rf_status(s: &mut TcpStream) {
+    let listener = sh("kill -0 $(cat /cache/rf_listen.pid 2>/dev/null) 2>/dev/null && echo up").contains("up");
+    let last = std::fs::read_to_string("/cache/rf_last.json").ok().and_then(|t| json::parse(&t).ok());
+    let mut o = vec![
+        ("listener", Value::Bool(listener)),
+        ("paired", Value::Bool(last.is_some())),
+    ];
+    if let Some(l) = last {
+        o.push(("last", l));
+    }
+    json_resp(s, "200 OK", &obj(o));
+}
+
+/// GET /api/rf/recent — the last decoded press (with a monotonic `seq`); the UI + the Home Assistant
+/// integration poll this and use `seq` to detect a new press. `{}` if none yet.
+fn api_rf_recent(s: &mut TcpStream) {
+    let body = std::fs::read_to_string("/cache/rf_last.json").unwrap_or_else(|_| "{}".into());
+    respond(s, "200 OK", "application/json", body.as_bytes());
+}
+
+/// POST /api/rf/pair — open a pairing window: drop a one-shot flag and stop the listener; the
+/// rcS.local supervisor relaunches it, and on startup it sees the flag and sends pair_open.
+fn api_rf_pair(s: &mut TcpStream) {
+    let _ = std::fs::write("/cache/rf_pair_request", "");
+    sh("kill $(cat /cache/rf_listen.pid 2>/dev/null) 2>/dev/null");
+    json_resp(
+        s,
+        "200 OK",
+        &obj(vec![
+            ("ok", Value::Bool(true)),
+            ("detail", Value::str("pairing window opening — hold Menu+Mute on the remote for ~5s")),
+        ]),
+    );
+}
+
+/// GET /api/rf/map — the current button→action map as v2 {active, profiles:{...}} (a legacy v1
+/// file is migrated on the fly so the UI sees a consistent shape).
+fn api_rf_map_get(s: &mut TcpStream) {
+    respond(s, "200 OK", "application/json", crate::rf::map_json().as_bytes());
+}
+
+/// POST /api/rf/map — upsert one button's short/long action in a profile. Body:
+/// {"button":"vol_up","profile":"tv","press":"short","type":"ir","device":..,"function":..}
+/// type "ha" | "profile" (with "target": profile name) | "none" (clear). profile/press default to
+/// the active profile / "short".
+fn api_rf_map_post(s: &mut TcpStream, body: &[u8]) {
+    let v = match json::parse(&String::from_utf8_lossy(body)) {
+        Ok(v) => v,
+        Err(e) => return json_err(s, "400 Bad Request", &format!("bad json: {}", e)),
+    };
+    let button = v.get("button").and_then(|x| x.as_str()).unwrap_or("");
+    if button.is_empty() {
+        return json_err(s, "400 Bad Request", "missing \"button\"");
+    }
+    let profile = v
+        .get("profile")
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(crate::rf::active_profile);
+    let press = v.get("press").and_then(|x| x.as_str()).unwrap_or("short");
+    let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("ir");
+    let device = v.get("device").and_then(|x| x.as_str()).unwrap_or("");
+    let function = v.get("function").and_then(|x| x.as_str()).unwrap_or("");
+    let target = v.get("target").and_then(|x| x.as_str()).unwrap_or("");
+    if kind == "ir" && (device.is_empty() || function.is_empty()) {
+        return json_err(s, "400 Bad Request", "type \"ir\" needs device and function");
+    }
+    if kind == "profile" && target.is_empty() {
+        return json_err(s, "400 Bad Request", "type \"profile\" needs \"target\"");
+    }
+    let action = crate::rf::Action {
+        kind: kind.to_string(),
+        device: device.to_string(),
+        function: function.to_string(),
+        profile: target.to_string(),
+    };
+    match crate::rf::save_action(&profile, button, press, &action) {
+        Ok(()) => json_resp(
+            s,
+            "200 OK",
+            &obj(vec![
+                ("ok", Value::Bool(true)),
+                ("profile", Value::str(profile)),
+                ("button", Value::str(button)),
+                ("press", Value::str(press)),
+                ("type", Value::str(kind)),
+            ]),
+        ),
+        Err(e) => json_err(s, "500 Internal Server Error", &e),
+    }
+}
+
+/// GET /api/rf/profiles — {active, profiles:[names]}.
+fn api_rf_profiles_get(s: &mut TcpStream) {
+    let (active, names) = crate::rf::list_profiles();
+    json_resp(
+        s,
+        "200 OK",
+        &obj(vec![
+            ("active", Value::str(active)),
+            ("profiles", Value::Arr(names.into_iter().map(Value::str).collect())),
+        ]),
+    );
+}
+
+/// POST /api/rf/profiles — {"action":"create|delete|activate","name":"ac"}.
+fn api_rf_profiles_post(s: &mut TcpStream, body: &[u8]) {
+    let v = match json::parse(&String::from_utf8_lossy(body)) {
+        Ok(v) => v,
+        Err(e) => return json_err(s, "400 Bad Request", &format!("bad json: {}", e)),
+    };
+    let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("");
+    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
+    if name.is_empty() {
+        return json_err(s, "400 Bad Request", "missing \"name\"");
+    }
+    let res = match action {
+        "create" => crate::rf::create_profile(name),
+        "delete" => crate::rf::delete_profile(name),
+        "activate" => crate::rf::set_active(name),
+        _ => return json_err(s, "400 Bad Request", "action must be create|delete|activate"),
+    };
+    match res {
+        Ok(()) => {
+            let (active, names) = crate::rf::list_profiles();
+            json_resp(
+                s,
+                "200 OK",
+                &obj(vec![
+                    ("ok", Value::Bool(true)),
+                    ("active", Value::str(active)),
+                    ("profiles", Value::Arr(names.into_iter().map(Value::str).collect())),
+                ]),
+            )
+        }
+        Err(e) => json_err(s, "400 Bad Request", &e),
     }
 }
 

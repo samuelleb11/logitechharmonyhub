@@ -40,6 +40,10 @@ class ApiClient:
     async def status(self) -> dict:
         return await self._get("/api/status")
 
+    async def rf_recent(self) -> dict:
+        """Last decoded remote button press: {seq, button, id, action} (or {} if none/older fw)."""
+        return await self._get("/api/rf/recent", timeout=5)
+
     async def send(self, device: str, function: str, select: int = DEFAULT_SELECT) -> dict:
         return await self._post(
             "/api/ir/send", {"device": device, "function": function, "select": select}

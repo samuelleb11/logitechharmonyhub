@@ -76,6 +76,11 @@ if [ -x /root/irapi ]; then
     log "devshell :2222 pid=$!"
     /root/irapi serve --port 80 >/var/volatile/log/web.log 2>&1 &
     log "web UI :80 pid=$!"
+    # Harmony RF remote receiver: a supervised loop keeps `rf listen` alive (it owns /dev/rfspi,
+    # decodes button presses -> fires mapped IR + records to /cache/rf_last.json for the web UI/HA).
+    # It exits only when /api/rf/pair stops it to open a pairing window; the loop relaunches it.
+    ( while true; do /root/irapi rf listen >/var/volatile/log/rflisten.log 2>&1; sleep 1; done ) &
+    log "rf listener supervised pid=$!"
 fi
 
 log "done; skipping luaworks (standalone)"

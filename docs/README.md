@@ -27,6 +27,7 @@ appliance. Start with the [project README](../README.md) for the overview.
 
 | Doc | Contents |
 |-----|----------|
+| [rf-remote-reverse-engineering.md](rf-remote-reverse-engineering.md) | The Harmony **remote** 2.4 GHz RF link (cc2544 radio, /dev/rfspi): protocol, pairing (Menu+Mute), and the button→IR plan |
 | [ir-api-project.md](ir-api-project.md) | The project plan: exposing IR over a network API — architecture, language choice, recovery |
 | [ir-service-buildplan.md](ir-service-buildplan.md) | The Rust appliance build plan and toolchain recipe |
 | [ir-hardware-reverse-engineering.raw.txt](ir-hardware-reverse-engineering.raw.txt) | Research notes: how IR TX/RX maps onto the AR9331 I2S peripheral |

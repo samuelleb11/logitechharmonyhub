@@ -34,18 +34,52 @@
   .fns{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:4px 0}
   .fns button{background:#222834;border:1px solid var(--line);color:var(--fg);font-weight:500}
   .fns button:active{background:var(--acc);border-color:var(--acc)}
+  /* tabs */
+  nav.tabs{max-width:640px;margin:0 auto;padding:0 14px;display:flex;gap:6px}
+  .tabbtn{flex:1;background:transparent;color:var(--mut);border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0;padding:10px;font-weight:600}
+  .tabbtn.active{background:var(--card);color:var(--fg);border-color:var(--line)}
+  main{padding-top:0}
+  .tab{display:flex;flex-direction:column;gap:14px}
+  /* remote overlay */
+  .remoteWrap{position:relative;width:100%;max-width:300px;margin:6px auto}
+  .remoteWrap img{width:100%;display:block;border-radius:14px;filter:brightness(.92)}
+  .hotspot{position:absolute;transform:translate(-50%,-50%);width:11%;height:4.2%;border-radius:20px;border:1.5px solid rgba(154,164,178,.35);background:rgba(15,19,26,.05);cursor:pointer;transition:background .15s,border-color .15s}
+  .hotspot:hover{border-color:var(--acc);background:rgba(76,139,245,.28)}
+  .hotspot.mapped{border-color:var(--ok);background:rgba(63,185,80,.18)}
+  .hotspot.sel{border-color:var(--acc);background:rgba(76,139,245,.4)}
+  .hotspot.flash{animation:flash .7s ease-out}       /* short press = green */
+  .hotspot.flashlong{animation:flashlong 1s ease-out} /* long press = blue, held longer */
+  @keyframes flash{0%{background:rgba(63,185,80,.85);border-color:var(--ok);box-shadow:0 0 12px var(--ok)}100%{background:rgba(15,19,26,.05)}}
+  @keyframes flashlong{0%{background:rgba(76,139,245,.95);border-color:var(--acc);box-shadow:0 0 18px var(--acc)}55%{background:rgba(76,139,245,.9);box-shadow:0 0 18px var(--acc)}100%{background:rgba(15,19,26,.05)}}
+  /* per-hotspot short (S) / long (L) action badges */
+  .ind{position:absolute;top:-8px;width:14px;height:14px;line-height:13px;text-align:center;font-size:9px;font-weight:700;border-radius:50%;color:#fff;pointer-events:none;box-shadow:0 0 3px rgba(0,0,0,.5)}
+  .ind.s{left:-5px;background:var(--ok)} .ind.l{right:-5px;background:var(--acc)}
+  .legend{display:flex;gap:14px;justify-content:center;font-size:12px;color:var(--mut);margin-top:8px}
+  .legend b{display:inline-block;width:14px;height:14px;line-height:14px;text-align:center;font-size:9px;border-radius:50%;color:#fff;margin-right:4px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.ir{background:rgba(76,139,245,.2);color:var(--acc)} .pill.ha{background:rgba(63,185,80,.2);color:var(--ok)} .pill.none{background:#222834;color:var(--mut)}
+  .feed{font-variant-numeric:tabular-nums;font-size:22px;font-weight:700;text-align:center;padding:10px;min-height:44px}
+  .feed small{display:block;font-size:12px;font-weight:400;color:var(--mut)}
+  .log{font:12px/1.6 ui-monospace,Menlo,monospace;color:var(--mut);max-height:120px;overflow:auto;margin-top:8px}
 </style>
 </head>
 <body>
 <header><span class="dot" id="dot"></span><h1>Harmony Hub</h1><span id="mode">…</span></header>
+<nav class="tabs">
+  <button class="tabbtn active" data-tab="ir" onclick="showTab('ir')">Control</button>
+  <button class="tabbtn" data-tab="remote" onclick="showTab('remote')">Remote</button>
+  <button class="tabbtn" data-tab="system" onclick="showTab('system')">System</button>
+</nav>
 <main>
   <div class="card" id="statusCard">
     <h2>Status</h2>
     <div id="status"><div class="row"><span class="k">loading…</span></div></div>
   </div>
 
+  <!-- ============ CONTROL TAB ============ -->
+  <div class="tab" data-tab="ir">
   <div class="card">
-    <h2>Remote</h2>
+    <h2>Send IR</h2>
     <select id="typ" onchange="loadBrands()"><option value="">— device type —</option></select>
     <select id="brand" onchange="loadDevs()"><option value="">— brand —</option></select>
     <select id="dev" onchange="loadFns()"><option value="">— model —</option></select>
@@ -82,7 +116,68 @@
       <div class="btns"><button onclick="learnSave()">Save</button></div>
     </div>
   </div>
+  </div>
 
+  <!-- ============ REMOTE TAB ============ -->
+  <div class="tab" data-tab="remote" style="display:none">
+  <div class="card">
+    <h2>Harmony Remote · pairing</h2>
+    <div class="row"><span class="k">Receiver</span><span class="v" id="rfListener">…</span></div>
+    <div class="row"><span class="k">Remote</span><span class="v" id="rfPaired">…</span></div>
+    <div class="btns"><button class="sec" id="rfPairBtn" onclick="rfPair()">Pair a remote</button></div>
+    <div class="msg mut" id="rfPairMsg">Press “Pair a remote”, then hold <b>Menu + Mute</b> together on the remote for ~5s.</div>
+  </div>
+
+  <div class="card">
+    <h2>Profiles</h2>
+    <div class="btns" id="rfProfiles" style="margin-bottom:8px"></div>
+    <div class="btns">
+      <input id="rfNewProf" placeholder="new profile name" autocomplete="off" style="flex:1;min-width:120px;margin:0">
+      <button class="sec" onclick="rfAddProfile()">Add</button>
+    </div>
+    <div class="msg mut" id="rfProfMsg">Each profile is its own button map. A button can <b>switch profiles</b> (e.g. Off → “TV”), so one remote drives many setups. The active profile is highlighted; edits apply to it.</div>
+  </div>
+
+  <div class="card">
+    <h2>Live · press a button to map it</h2>
+    <div class="feed" id="rfFeed">—<small>waiting for a button press…</small></div>
+    <div class="remoteWrap" id="remoteWrap">
+      <img src="/assets/smart-control_remote.jpg" alt="Harmony Smart Control remote">
+      <!-- hotspots injected by JS -->
+    </div>
+    <div class="legend"><span><b style="background:var(--ok)">S</b>short action</span><span><b style="background:var(--acc)">L</b>long action</span><span>tap a button to map it</span></div>
+    <div class="log" id="rfLog"></div>
+  </div>
+
+  <div class="card" id="assignCard" style="display:none">
+    <h2>Assign · <span id="asnBtn" style="text-transform:none;color:var(--fg);letter-spacing:0"></span> <span id="asnProf" class="mut" style="font-weight:400;text-transform:none;letter-spacing:0"></span></h2>
+    <div class="btns" style="margin-bottom:8px">
+      <button class="sec" id="pressShortBtn" onclick="asnPress('short')">Short press</button>
+      <button class="sec" id="pressLongBtn" onclick="asnPress('long')">Long press</button>
+    </div>
+    <div class="btns" style="margin-bottom:8px">
+      <button class="sec" id="asnIrBtn" onclick="asnType('ir')">IR code</button>
+      <button class="sec" id="asnHaBtn" onclick="asnType('ha')">Home Assistant</button>
+      <button class="sec" id="asnProfileBtn" onclick="asnType('profile')">Switch profile</button>
+      <button class="sec" id="asnNoneBtn" onclick="asnType('none')">Clear</button>
+    </div>
+    <div id="asnIr" style="display:none">
+      <select id="m_typ" onchange="mLoadBrands()"><option value="">— device type —</option></select>
+      <select id="m_brand" onchange="mLoadDevs()"><option value="">— brand —</option></select>
+      <select id="m_dev" onchange="mLoadFns()"><option value="">— model —</option></select>
+      <div class="fns" id="m_fns"></div>
+    </div>
+    <div id="asnHa" class="msg mut" style="display:none">Fires a Home Assistant event on every press (via the harmony_ir integration) — harness it in any HA automation. No local IR sent.</div>
+    <div id="asnProfile" style="display:none">
+      <select id="asnProfileSel"></select>
+      <div class="btns"><button onclick="rfSaveProfileAction()">Set profile switch</button></div>
+    </div>
+    <div class="msg mut" id="asnMsg"></div>
+  </div>
+  </div>
+
+  <!-- ============ SYSTEM TAB ============ -->
+  <div class="tab" data-tab="system" style="display:none">
   <div class="card">
     <h2>Wi-Fi</h2>
     <div class="btns"><button class="sec" id="scanBtn" onclick="scan()">Scan networks</button></div>
@@ -111,12 +206,19 @@
     </div>
     <div class="msg mut" id="maintMsg"></div>
   </div>
+  </div>
 </main>
 <script>
 const $=s=>document.querySelector(s);
 let sel=null;
 async function api(path,opt){const r=await fetch(path,opt);const t=await r.text();try{return{ok:r.ok,d:JSON.parse(t)}}catch(e){return{ok:r.ok,d:{raw:t}}}}
 function rows(o){return Object.entries(o).map(([k,v])=>`<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('')}
+function msg(sel,t,c){const e=$(sel);e.textContent=t;e.className='msg '+(c||'mut')}
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.style.display=t.dataset.tab===name?'':'none');
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  if(name==='remote'){rfStatus();rfLoadMap()}
+}
 async function load(){
   const {ok,d}=await api('/api/status');
   if(!ok){$('#status').innerHTML='<div class="row"><span class="k err">unreachable</span></div>';return}
@@ -125,25 +227,18 @@ async function load(){
   $('#status').innerHTML=rows({Mode:d.mode||'?',SSID:d.ssid||'—',IP:d.ip||'—',IR:d.ir||'?',Uptime:(d.uptime||'?')+'s',Version:d.version||''});
 }
 function fill(sel,items,ph,val,txt){sel.innerHTML='<option value="">'+ph+'</option>';items.forEach(x=>{const o=document.createElement('option');o.value=val(x);o.textContent=txt(x);sel.appendChild(o)})}
-async function loadTypes(){
-  const {d}=await api('/api/ir/types');
-  fill($('#typ'),d.types||[],'— device type —',x=>x,x=>x.replace(/_/g,' '));
-}
+async function loadTypes(){const {d}=await api('/api/ir/types');fill($('#typ'),d.types||[],'— device type —',x=>x,x=>x.replace(/_/g,' '));fill($('#m_typ'),d.types||[],'— device type —',x=>x,x=>x.replace(/_/g,' '))}
 async function loadBrands(){
   $('#fns').innerHTML='';fill($('#dev'),[],'— model —',x=>x,x=>x);
   const t=$('#typ').value; if(!t){fill($('#brand'),[],'— brand —',x=>x,x=>x);return}
-  const {d}=await api('/api/ir/brands?type='+encodeURIComponent(t));
-  fill($('#brand'),d.brands||[],'— brand —',x=>x,x=>x);
+  const {d}=await api('/api/ir/brands?type='+encodeURIComponent(t));fill($('#brand'),d.brands||[],'— brand —',x=>x,x=>x);
 }
 async function loadDevs(){
-  $('#fns').innerHTML='';
-  const t=$('#typ').value,b=$('#brand').value; if(!b){fill($('#dev'),[],'— model —',x=>x,x=>x);return}
-  const {d}=await api('/api/ir/devices?type='+encodeURIComponent(t)+'&brand='+encodeURIComponent(b));
-  fill($('#dev'),d.devices||[],'— model —',x=>x.id,x=>x.model);
+  $('#fns').innerHTML='';const t=$('#typ').value,b=$('#brand').value; if(!b){fill($('#dev'),[],'— model —',x=>x,x=>x);return}
+  const {d}=await api('/api/ir/devices?type='+encodeURIComponent(t)+'&brand='+encodeURIComponent(b));fill($('#dev'),d.devices||[],'— model —',x=>x.id,x=>x.model);
 }
 async function loadFns(){
-  const dev=$('#dev').value,box=$('#fns');box.innerHTML='';
-  if(!dev)return;
+  const dev=$('#dev').value,box=$('#fns');box.innerHTML='';if(!dev)return;
   const {d}=await api('/api/ir/functions?device='+encodeURIComponent(dev));
   (d.functions||[]).forEach(f=>{const b=document.createElement('button');b.textContent=f;b.onclick=()=>fire(dev,f);box.appendChild(b)});
 }
@@ -165,14 +260,13 @@ async function learnSave(){
   if(!learned)return;
   const model=$('#lnModel').value.trim()||'Learned device',func=$('#lnFunc').value.trim();
   if(!func){msg('#learnMsg','enter a button name','err');return}
-  const body={model,function:func,carrier:learned.carrier,us:learned.us};
-  if(learnDev)body.device=learnDev;
+  const body={model,function:func,carrier:learned.carrier,us:learned.us};if(learnDev)body.device=learnDev;
   const {ok,d}=await api('/api/ir/learn/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-  if(ok){learnDev=d.device;$('#lnFunc').value='';msg('#learnMsg','Saved '+func+' ✓ (device '+d.device+') — learn more, or find it under type "Custom" in Remote.','ok');loadTypes()}
+  if(ok){learnDev=d.device;$('#lnFunc').value='';msg('#learnMsg','Saved '+func+' ✓ (device '+d.device+')','ok');loadTypes()}
   else{msg('#learnMsg',(d&&d.error)||'save failed','err')}
 }
 let acOn=true;
-function acPow(){acOn=!acOn;$('#acPow').textContent=acOn?'On':'Off';$('#acPow').className=acOn?'sec':'sec';acSend()}
+function acPow(){acOn=!acOn;$('#acPow').textContent=acOn?'On':'Off';acSend()}
 async function acSend(){
   const body={power:acOn?'on':'off',mode:$('#acMode').value,fan:$('#acFan').value,temp:parseInt($('#acTemp').value)};
   msg('#acMsg','Sending…','mut');
@@ -180,8 +274,7 @@ async function acSend(){
   msg('#acMsg', ok?('AC set: '+(acOn?body.mode+' '+body.temp+'°C, fan '+body.fan:'off')+' ✓'):('error: '+((d&&d.error)||'failed')), ok?'ok':'err');
 }
 async function sendRaw(){
-  const raw=$('#rawus').value.trim().split(',').map(x=>parseInt(x.trim())).filter(x=>x>0);
-  const car=parseInt($('#rawcar').value)||38000;
+  const raw=$('#rawus').value.trim().split(',').map(x=>parseInt(x.trim())).filter(x=>x>0);const car=parseInt($('#rawcar').value)||38000;
   if(!raw.length){msg('#rawMsg','enter comma-separated µs (mark,space,…)','err');return}
   msg('#rawMsg','sending '+raw.length+' intervals…','mut');
   const {ok,d}=await api('/api/ir/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({raw_us:raw,carrier:car})});
@@ -189,8 +282,7 @@ async function sendRaw(){
 }
 async function scan(){
   const b=$('#scanBtn');b.disabled=true;b.textContent='Scanning…';
-  const {d}=await api('/api/wifi/scan');
-  b.disabled=false;b.textContent='Scan networks';
+  const {d}=await api('/api/wifi/scan');b.disabled=false;b.textContent='Scan networks';
   const nets=$('#nets');nets.innerHTML='';
   (d.networks||[]).forEach(n=>{
     const el=document.createElement('div');el.className='net';
@@ -201,36 +293,174 @@ async function scan(){
   if(!(d.networks||[]).length)nets.innerHTML='<div class="msg mut">no networks found</div>';
 }
 async function connect(){
-  const ssid=$('#ssid').value.trim(),psk=$('#psk').value;
-  if(!ssid){msg('#wifiMsg','SSID required','err');return}
+  const ssid=$('#ssid').value.trim(),psk=$('#psk').value;if(!ssid){msg('#wifiMsg','SSID required','err');return}
   msg('#wifiMsg','Saving & connecting… the hub will switch networks; reconnect to it after.','mut');
   await api('/api/wifi/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ssid,psk})});
   msg('#wifiMsg','Applied. If it joins '+ssid+', find its new IP on that network.','ok');
 }
 async function otaFw(){
-  const f=$('#otaFw').files[0],tok=$('#otaToken').value.trim();
-  if(!f){msg('#otaMsg','pick a firmware file','err');return}
-  if(!confirm('Flash new firmware and reboot?'))return;
-  msg('#otaMsg','Uploading '+(f.size>>10)+'KB…','mut');
-  try{
-    const r=await fetch('/api/ota?token='+encodeURIComponent(tok),{method:'POST',body:await f.arrayBuffer()});
-    const d=await r.json().catch(()=>({}));
+  const f=$('#otaFw').files[0],tok=$('#otaToken').value.trim();if(!f){msg('#otaMsg','pick a firmware file','err');return}
+  if(!confirm('Flash new firmware and reboot?'))return;msg('#otaMsg','Uploading '+(f.size>>10)+'KB…','mut');
+  try{const r=await fetch('/api/ota?token='+encodeURIComponent(tok),{method:'POST',body:await f.arrayBuffer()});const d=await r.json().catch(()=>({}));
     msg('#otaMsg', r.ok?('Flashed '+d.bytes+'B ✓ — rebooting, reconnect in ~40s'):('error: '+(d.error||r.status)), r.ok?'ok':'err');
   }catch(e){msg('#otaMsg','upload done or device rebooting: '+e,'mut')}
 }
 async function otaDb(){
-  const f=$('#otaDbFile').files[0],tok=$('#otaToken').value.trim();
-  if(!f){msg('#otaMsg','pick a database file','err');return}
+  const f=$('#otaDbFile').files[0],tok=$('#otaToken').value.trim();if(!f){msg('#otaMsg','pick a database file','err');return}
   msg('#otaMsg','Uploading DB '+(f.size>>10)+'KB…','mut');
-  const r=await fetch('/api/ota/db?token='+encodeURIComponent(tok),{method:'POST',body:await f.arrayBuffer()});
-  const d=await r.json().catch(()=>({}));
-  msg('#otaMsg', r.ok?('DB updated ✓ — '+d.devices+' devices'):('error: '+(d.error||r.status)), r.ok?'ok':'err');
-  if(r.ok)loadTypes();
+  const r=await fetch('/api/ota/db?token='+encodeURIComponent(tok),{method:'POST',body:await f.arrayBuffer()});const d=await r.json().catch(()=>({}));
+  msg('#otaMsg', r.ok?('DB updated ✓ — '+d.devices+' devices'):('error: '+(d.error||r.status)), r.ok?'ok':'err');if(r.ok)loadTypes();
 }
 async function reboot(){if(!confirm('Reboot the hub?'))return;msg('#maintMsg','Rebooting…','mut');await api('/api/reboot',{method:'POST'})}
 async function factory(){if(!confirm('Factory reset: erases the saved Wi-Fi network and learned IR codes, then reboots into setup mode (the Harmony-Setup Wi-Fi). Continue?'))return;msg('#maintMsg','Resetting…','mut');await api('/api/factory-reset',{method:'POST'})}
-function msg(sel,t,c){const e=$(sel);e.textContent=t;e.className='msg '+(c||'mut')}
+
+/* ===================== HARMONY RF REMOTE ===================== */
+// [name, label, x%, y%] — hotspot centers over the remote image (approximate; nudge to taste).
+const RF_LAYOUT=[
+  ['off','Off',24,13.5],
+  ['music','♪',26,19.2],['tv','TV',50,19.2],['movie','▶',74,19.2],
+  ['rewind','⏮',24,25],['play','▶',49,25],['forward','⏭',74,25],
+  ['record','●',25,29.5],['pause','⏸',49,29.5],['stop','⏹',74,29.5],
+  ['red','red',18,34.6],['green','grn',39,34.6],['yellow','yel',58,34.6],['blue','blu',79,34.6],
+  ['dvr','DVR',25,39.2],['guide','Guide',49,39.2],['info','Info',74,39.2],
+  ['exit','Exit',26,44],['menu','Menu',73,44],
+  ['vol_up','Vol+',15.5,49.5],['vol_down','Vol−',15.5,57],
+  ['ch_up','Ch+',84.5,49.5],['ch_down','Ch−',84.5,57],
+  ['up','▲',48,49.5],['left','◀',33,53.5],['ok','OK',48,53.5],['right','▶',63,53.5],['down','▼',48,58],
+  ['mute','Mute',26,62.5],['back','Back',73,62.5],
+  ['1','1',24,67],['2','2',48,67],['3','3',73,67],
+  ['4','4',24,71],['5','5',48,71],['6','6',73,71],
+  ['7','7',24,75],['8','8',48,75],['9','9',73,75],
+  ['prev','--',24,79],['0','0',48,79],['enter','E',73,79],
+];
+let rfMap={active:'default',profiles:{}},rfSeq=-1,rfSel=null,rfType='ir',rfPress='short';
+async function rfStatus(){
+  const {ok,d}=await api('/api/rf/status');
+  if(!ok){$('#rfListener').textContent='unreachable';return}
+  $('#rfListener').innerHTML=d.listener?'<span class="pill ha">running</span>':'<span class="pill none">stopped</span>';
+  const last=d.last&&d.last.button?(' · last: '+d.last.button):'';
+  $('#rfPaired').innerHTML=(d.paired?'<span class="pill ha">linked</span>':'<span class="pill none">not paired</span>')+last;
+}
+async function rfPair(){
+  const b=$('#rfPairBtn');b.disabled=true;
+  const {ok,d}=await api('/api/rf/pair',{method:'POST'});
+  msg('#rfPairMsg', ok?'Pairing window open — hold Menu + Mute together on the remote for ~5s, then press a button.':'pair failed','ok');
+  setTimeout(()=>{b.disabled=false},3000);setTimeout(rfStatus,3000);
+}
+async function rfLoadMap(){
+  const {d}=await api('/api/rf/map');
+  rfMap=(d&&d.profiles)?d:{active:'default',profiles:{default:{}}};
+  renderProfiles();renderHotspots();
+}
+function activeProfile(){return rfMap.active||'default'}
+function curMap(){return (rfMap.profiles&&rfMap.profiles[activeProfile()])||{}}
+function actionOf(name,press){const e=curMap()[name];const a=e&&e[press||'short'];if(!a||!a.type||a.type==='none')return{kind:'none'};return{kind:a.type,device:a.device||'',function:a.function||'',profile:a.profile||''}}
+function desc(a){return a.kind==='ir'?(a.device+'/'+a.function):a.kind==='ha'?'HA':a.kind==='profile'?('→'+a.profile):'—'}
+function renderProfiles(){
+  const box=$('#rfProfiles');box.innerHTML='';
+  let names=Object.keys(rfMap.profiles||{});if(!names.length)names=['default'];
+  names.forEach(n=>{
+    const b=document.createElement('button');b.className='sec';b.textContent=n;
+    if(n===activeProfile()){b.style.background='var(--acc)';b.style.color='#fff'}
+    b.onclick=()=>rfActivate(n);box.appendChild(b);
+  });
+  if(names.length>1){const d=document.createElement('button');d.className='sec';d.textContent='🗑';d.title='delete “'+activeProfile()+'”';d.onclick=()=>rfDeleteProfile(activeProfile());box.appendChild(d)}
+}
+async function rfProfPost(action,name){return api('/api/rf/profiles',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,name})})}
+async function rfActivate(n){await rfProfPost('activate',n);await rfLoadMap()}
+async function rfAddProfile(){
+  const n=$('#rfNewProf').value.trim();if(!n){msg('#rfProfMsg','enter a name','err');return}
+  await rfProfPost('create',n);await rfProfPost('activate',n);$('#rfNewProf').value='';await rfLoadMap();
+  msg('#rfProfMsg','profile “'+n+'” added & active ✓','ok');
+}
+async function rfDeleteProfile(n){
+  if(!confirm('Delete profile “'+n+'” and its mappings?'))return;
+  const {ok,d}=await rfProfPost('delete',n);
+  if(ok){await rfLoadMap();msg('#rfProfMsg','deleted “'+n+'” ✓','ok')}else msg('#rfProfMsg',(d&&d.error)||'delete failed','err');
+}
+function renderHotspots(){
+  const wrap=$('#remoteWrap');wrap.querySelectorAll('.hotspot').forEach(e=>e.remove());
+  RF_LAYOUT.forEach(([name,label,x,y])=>{
+    const h=document.createElement('div');
+    const hasS=actionOf(name,'short').kind!=='none',hasL=actionOf(name,'long').kind!=='none';
+    h.className='hotspot'+(hasS||hasL?' mapped':'')+(rfSel===name?' sel':'');
+    h.style.left=x+'%';h.style.top=y+'%';h.dataset.name=name;
+    h.title=name+' · short: '+desc(actionOf(name,'short'))+' · long: '+desc(actionOf(name,'long'));
+    if(hasS)h.appendChild(Object.assign(document.createElement('span'),{className:'ind s',textContent:'S'}));
+    if(hasL)h.appendChild(Object.assign(document.createElement('span'),{className:'ind l',textContent:'L'}));
+    h.onclick=()=>selectBtn(name);wrap.appendChild(h);
+  });
+}
+function selectBtn(name){
+  rfSel=name;renderHotspots();
+  $('#assignCard').style.display='';$('#asnBtn').textContent=name;$('#asnProf').textContent='· profile “'+activeProfile()+'”';
+  asnPress('short');
+  $('#assignCard').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+// asnPress: choose which press (short/long) we're editing, reflect its current action.
+function asnPress(p){
+  rfPress=p;
+  [['short','pressShortBtn'],['long','pressLongBtn']].forEach(([k,id])=>{const b=document.getElementById(id);b.style.background=k===p?'var(--acc)':'';b.style.color=k===p?'#fff':''});
+  const a=actionOf(rfSel,p);showAsn(a.kind==='none'?'ir':a.kind);
+  msg('#asnMsg','editing '+p+'-press · now: '+(a.kind==='ir'?('IR '+a.device+'/'+a.function):a.kind==='ha'?'Home Assistant':a.kind==='profile'?('switch → “'+a.profile+'”'):'unmapped'),'mut');
+}
+// showAsn: toggle the action panel + highlight the active type (no save).
+function showAsn(t){
+  rfType=t;
+  $('#asnIr').style.display=t==='ir'?'':'none';
+  $('#asnHa').style.display=t==='ha'?'':'none';
+  $('#asnProfile').style.display=t==='profile'?'':'none';
+  if(t==='profile')fill($('#asnProfileSel'),Object.keys(rfMap.profiles||{}).filter(n=>n!==activeProfile()),'— target profile —',x=>x,x=>x);
+  [['ir','asnIrBtn'],['ha','asnHaBtn'],['profile','asnProfileBtn'],['none','asnNoneBtn']].forEach(([k,id])=>{
+    const b=document.getElementById(id);b.className='sec';
+    if(k===t){b.style.background=(t==='none'?'var(--bad)':'var(--acc)');b.style.color='#fff'}else{b.style.background='';b.style.color=''}
+  });
+}
+function asnType(t){showAsn(t);if(t==='ha')rfSaveMap('ha');if(t==='none')rfSaveMap('none')}
+async function rfSaveProfileAction(){const tgt=$('#asnProfileSel').value;if(!tgt){msg('#asnMsg','pick a target profile','err');return}rfSaveMap('profile',null,null,tgt)}
+async function mLoadBrands(){
+  $('#m_fns').innerHTML='';fill($('#m_dev'),[],'— model —',x=>x,x=>x);
+  const t=$('#m_typ').value;if(!t){fill($('#m_brand'),[],'— brand —',x=>x,x=>x);return}
+  const {d}=await api('/api/ir/brands?type='+encodeURIComponent(t));fill($('#m_brand'),d.brands||[],'— brand —',x=>x,x=>x);
+}
+async function mLoadDevs(){
+  $('#m_fns').innerHTML='';const t=$('#m_typ').value,b=$('#m_brand').value;if(!b){fill($('#m_dev'),[],'— model —',x=>x,x=>x);return}
+  const {d}=await api('/api/ir/devices?type='+encodeURIComponent(t)+'&brand='+encodeURIComponent(b));fill($('#m_dev'),d.devices||[],'— model —',x=>x.id,x=>x.model);
+}
+async function mLoadFns(){
+  const dev=$('#m_dev').value,box=$('#m_fns');box.innerHTML='';if(!dev)return;
+  const {d}=await api('/api/ir/functions?device='+encodeURIComponent(dev));
+  (d.functions||[]).forEach(f=>{const b=document.createElement('button');b.textContent=f;b.onclick=()=>rfSaveMap('ir',dev,f);box.appendChild(b)});
+}
+async function rfSaveMap(kind,device,func,target){
+  if(!rfSel)return;
+  const body={profile:activeProfile(),button:rfSel,press:rfPress,type:kind};
+  if(kind==='ir'){body.device=device;body.function=func}
+  if(kind==='profile'){body.target=target}
+  const {ok,d}=await api('/api/rf/map',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(ok){msg('#asnMsg',rfPress+'-press '+(kind==='ir'?('→ '+device+'/'+func):kind==='ha'?'→ Home Assistant':kind==='profile'?('→ switch to “'+target+'”'):'cleared')+' ✓','ok');await rfLoadMap()}
+  else msg('#asnMsg',(d&&d.error)||'save failed','err');
+}
+async function rfPoll(){
+  if($('.tab[data-tab=remote]').style.display==='none')return;
+  const {ok,d}=await api('/api/rf/recent');
+  if(!ok||!d||d.seq===undefined)return;
+  if(d.seq!==rfSeq){
+    const first=rfSeq<0;rfSeq=d.seq;
+    if(!first){flashButton(d.button,d.hold);pushLog(d)}
+    $('#rfFeed').innerHTML=(d.button||'—')+(d.hold?' <span class="pill ha">long</span>':'')+'<small>'+(d.id||'')+' · '+(d.action||'')+(d.profile?(' · '+d.profile):'')+'</small>';
+  }
+}
+function flashButton(name,long){const h=$('.hotspot[data-name="'+name+'"]');if(!h)return;h.classList.remove('flash','flashlong');void h.offsetWidth;h.classList.add(long?'flashlong':'flash')}
+function pushLog(d){
+  const el=$('#rfLog');const line=document.createElement('div');
+  line.textContent=(d.button||'?')+(d.hold?' (long)':'')+'  ['+(d.action||'')+']'+(d.profile?('  @'+d.profile):'');
+  el.prepend(line);while(el.childNodes.length>30)el.removeChild(el.lastChild);
+}
+
 load();setInterval(load,5000);loadTypes();
+setInterval(()=>{rfPoll()},700);
+setInterval(()=>{if($('.tab[data-tab=remote]').style.display!=='none')rfStatus()},5000);
 </script>
 </body>
 </html>

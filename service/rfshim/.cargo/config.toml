@@ -1,0 +1,4 @@
+# no_std PIC cdylib (LD_PRELOAD interposer) for the device's uClibc hal — no libc dependency.
+[target.mips-unknown-linux-musl]
+linker = "/Users/sysop/.rustup/toolchains/1.74.0-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "relocation-model=pic"]

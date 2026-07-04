@@ -60,7 +60,8 @@ service/
   build-mips.sh        cross-compile recipe (big-endian MIPS, static musl)
   rcS.local            device boot script (starts the appliance, no Logitech stack)
   standalone-ir-bringup.sh
-homeassistant/         Home Assistant custom integration (custom_components/harmony_ir)
+custom_components/     the Home Assistant integration (harmony_ir) — HACS-installable
+homeassistant/         Home Assistant integration docs (setup + usage README)
 tools/                 host tools: ota.py (HTTP update), flash backup, UART, RE helpers
 ir-db/                 source IR captures
 experiments/           early Go/Rust bring-up probes (why it's single-threaded Rust)
@@ -101,9 +102,9 @@ Reference docs: **[HTTP API](docs/http-api.md)** · **[CLI](docs/cli.md)** ·
 
 Add the hub as a device and you get a `remote` (fire + learn/delete codes), per-function
 `button`s, an optional AC `climate` thermostat, and diagnostic `sensor`s — all UI-configured,
-with availability tracking. Copy
-[`homeassistant/custom_components/harmony_ir/`](homeassistant/custom_components/harmony_ir/) into
-your HA `config/custom_components/`. See [homeassistant/README.md](homeassistant/README.md).
+with availability tracking. Install via **HACS** (add this repo as a custom *Integration*
+repository) or copy [`custom_components/harmony_ir/`](custom_components/harmony_ir/) into your HA
+`config/custom_components/`. See [homeassistant/README.md](homeassistant/README.md).
 
 ## Safety
 

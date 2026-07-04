@@ -26,15 +26,15 @@ learns IR straight from `/dev/i2s`, no Logitech cloud) from Home Assistant — f
 
 ## Install
 
-### Manual (recommended)
-Copy [`custom_components/harmony_ir/`](custom_components/harmony_ir/) into your Home Assistant
+### HACS (recommended)
+In HACS → **⋮ → Custom repositories**, add `https://github.com/samuelleb11/logitechharmonyhub`
+with category **Integration**, then install **Harmony IR Blaster** and restart HA. Finally,
+**Settings → Devices & Services → Add Integration → Harmony IR Blaster** and enter the hub's IP.
+
+### Manual
+Copy [`custom_components/harmony_ir/`](../custom_components/harmony_ir/) into your Home Assistant
 `config/custom_components/`, restart HA, then **Settings → Devices & Services → Add Integration →
 Harmony IR Blaster** and enter the hub's IP.
-
-### HACS
-HACS expects an integration at `custom_components/<domain>/` in the **repo root**, but here it lives
-under `homeassistant/`. To install via HACS, add a fork/repo that has `custom_components/harmony_ir/`
-at its root as a custom **Integration** repository. (The manual method above always works.)
 
 ### Zero-code alternative (no HACS)
 The appliance also serves ready-to-paste `rest_command` YAML at `http://<hub-ip>/api/ha/rest_command.yaml`.
